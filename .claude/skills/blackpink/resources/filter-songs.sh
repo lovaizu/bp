@@ -11,6 +11,9 @@
 #
 # Output: JSON array of matching song objects
 
+LOG="/tmp/bp-filter.log"
+echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] args: $*" >> "$LOG"
+
 SONGS_FILE="$1"
 FILTER_TYPE="$2"
 
