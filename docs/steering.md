@@ -108,7 +108,12 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
 
 ### フェーズ2: GHC変換
 
-- [ ] **2-1. 変換スクリプト作成** — 設計書セクション5のマッピングルールに基づく
+- [ ] **2-0. マッピングテーブル最新化** — CC/GHC両方の公式ドキュメントを確認し、設計書セクション5のマッピングが現在の仕様と一致するか検証する
+  - CC公式: https://code.claude.com/docs/en/sub-agents, skills, slash-commands
+  - GHC公式: https://code.visualstudio.com/docs/copilot/agents/subagents, custom-agents
+  - 差分があればマッピングテーブルを更新
+  - マッピングファイルに「最終確認日」を記載する（いつのドキュメントに基づくか追跡可能にする）
+- [ ] **2-1. 変換スクリプト作成** — 最新化したマッピングルールに基づく
 - [ ] **2-2. GHC側ファイル生成** — スクリプトで `.github/` 配下に変換出力
 - [ ] **2-3. GHC側テスト** — 同じ3シナリオをGHC（VS Code Copilot）で実行
 - [ ] **2-4. CC/GHC結果比較** — 同等の結果が得られるか確認
