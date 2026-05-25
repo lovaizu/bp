@@ -1,0 +1,55 @@
+{
+  "_meta": {
+    "description": "CC → GHC mapping rules (design doc section 5)",
+    "last_verified": "2026-05-25",
+    "cc_docs": "code.claude.com/docs/en/",
+    "ghc_docs": "code.visualstudio.com/docs/copilot/"
+  },
+
+  "tool_names": {
+    "Read": "readFile",
+    "Grep": "search/codebase",
+    "Glob": "search/codebase",
+    "Write": "createFile",
+    "Edit": "editFiles",
+    "Bash": "runInTerminal",
+    "Agent": "agent/runSubagent"
+  },
+
+  "model_names": {
+    "haiku": "Claude Haiku 4.5 (copilot)",
+    "sonnet": "Claude Sonnet 4.6 (copilot)",
+    "opus": "Claude Opus 4.6 (copilot)"
+  },
+
+  "path_replacements": {
+    ".claude/skills/": ".github/skills/",
+    ".claude/agents/": ".github/agents/"
+  },
+
+  "frontmatter": {
+    "command": {
+      "remove_fields": ["command"],
+      "add_fields": { "agent": "agent" }
+    },
+    "agent": {
+      "remove_fields": ["disallowedTools", "permissionMode", "maxTurns", "memory", "skills"],
+      "add_fields": { "target": "vscode" }
+    },
+    "skill": {
+      "remove_fields": [],
+      "add_fields": {}
+    }
+  },
+
+  "file_structure": {
+    "commands_dir":  { "cc": ".claude/commands",  "ghc": ".github/prompts" },
+    "skills_dir":    { "cc": ".claude/skills",    "ghc": ".github/skills" },
+    "agents_dir":    { "cc": ".claude/agents",    "ghc": ".github/agents" }
+  },
+
+  "file_extensions": {
+    "command": { "cc": ".md", "ghc": ".prompt.md" },
+    "agent":   { "cc": ".md", "ghc": ".agent.md" }
+  }
+}
