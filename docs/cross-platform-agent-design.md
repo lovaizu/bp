@@ -1193,6 +1193,10 @@ esac
 
 ## 5. マッピングルール（CC → GHC 変換）
 
+> **最終確認日: 2026-05-25**
+> CC: code.claude.com/docs/en/ (sub-agents, skills, agent-sdk/slash-commands)
+> GHC: code.visualstudio.com/docs/copilot/ (agents/subagents, customization/custom-agents, customization/prompt-files, customization/agent-skills, agents/agent-tools)
+
 ### 5.1 ファイル配置
 
 | レイヤー         | CC                                    | GHC                                    |
@@ -1203,60 +1207,124 @@ esac
 | リソース         | `.claude/skills/<name>/resources/*`   | `.github/skills/<name>/resources/*`    |
 | サブエージェント  | `.claude/agents/<name>.md`            | `.github/agents/<name>.agent.md`       |
 
+> **補足:** GHCは `.claude/agents/` および `.claude/skills/` ディレクトリも直接読み込み可能（Claudeフォーマット互換）。変換せずとも動作する可能性があるが、本設計ではGHCネイティブ形式への変換を行う。
+
 ### 5.2 フロントマター変換
 
 **エントリポイント：**
 
 | CC フィールド              | GHC フィールド                      | 備考                          |
 |--------------------------|-------------------------------------|-------------------------------|
-| `description: ...`       | `description: "..."`                | 値をクォートで囲む              |
+| `description: ...`       | `description: ...`                  | YAML標準の文字列記法で統一      |
 | `command: /name`         | （不要）                             | GHCはファイル名がコマンド名     |
-| `allowed-tools: ...`     | `tools: [...]`                      | 配列形式に変換                  |
-| （なし）                  | `agent: "agent"`                    | GHC必須フィールドを追加         |
+| `allowed-tools: ...`     | `tools: [...]`                      | 配列形式に変換＋ツール名マッピング適用 |
+| （なし）                  | `agent: agent`                      | GHCフィールドを追加。`agent` の他に `ask`, `plan`, カスタムエージェント名も指定可 |
+| `model: ...`             | `model: ...`                        | モデル名をGHC形式に変換（5.5参照） |
 
-**スキル（SKILL.md）・WF・リソース：**
+**スキル（SKILL.md）：**
 
-変換不要。CC/GHCで同一内容。
+| CC フィールド                   | GHC フィールド                   | 備考                          |
+|-------------------------------|----------------------------------|-------------------------------|
+| `name`                        | `name`                           | そのまま（CC/GHC共通）         |
+| `description`                 | `description`                    | そのまま（CC/GHC共通）         |
+| `disable-model-invocation`    | `disable-model-invocation`       | そのまま（CC/GHC共通）         |
+| `user-invocable`              | `user-invocable`                 | そのまま（CC/GHC共通）         |
+| `argument-hint`               | `argument-hint`                  | そのまま（CC/GHC共通）         |
+| `allowed-tools`               | `tools: [...]`                   | フィールド名変更＋ツール名マッピング適用 |
+| `model`                       | `model`                          | モデル名をGHC形式に変換（5.5参照） |
+| `context: fork`               | `context: fork`                  | そのまま（CC/GHC共通、GHC側はExperimental） |
+
 ただしプロンプト本文中のパス参照を変換する必要がある（`.claude/skills/` → `.github/skills/`）。
+WF・リソースファイルはパス参照の変換のみ。
 
 **サブエージェント：**
 
 | CC フィールド              | GHC フィールド                      | 備考                          |
 |--------------------------|-------------------------------------|-------------------------------|
-| `name: my-agent`         | `name: _my-agent`                   | `_`プレフィックス追加           |
-| `description: ...`       | `description: "..."`                | 値をクォートで囲む              |
-| `tools: Read, Grep`      | `tools: ['read/readFile', 'search']`| ツール名マッピング適用           |
-| `model: sonnet`          | （削除）                             | GHCはUI側で選択                |
-| （なし）                  | `target: vscode`                    | GHC必須フィールドを追加         |
+| `name: my-agent`         | `name: my-agent`                    | そのまま（プレフィックス不要）   |
+| `description: ...`       | `description: ...`                  | そのまま                       |
+| `tools: Read, Grep`      | `tools: ['readFile', 'search/codebase']` | ツール名マッピング適用（5.4参照） |
+| `model: sonnet`          | `model: Claude Sonnet 4.6 (copilot)` | モデル名をGHC形式に変換（5.5参照） |
+| `disallowedTools: ...`   | （削除）                             | GHCに対応フィールドなし         |
+| `permissionMode: ...`    | （削除）                             | GHCに対応フィールドなし         |
+| `maxTurns: ...`          | （削除）                             | GHCに対応フィールドなし         |
+| `memory: ...`            | （削除）                             | GHCに対応フィールドなし         |
+| `skills: [...]`          | （削除）                             | GHCに対応フィールドなし         |
+| `hooks: ...`             | `hooks: ...`                        | GHCもサポート（Preview）。形式は異なる可能性あり |
+| （なし）                  | `target: vscode`                    | GHCフィールドを追加             |
+| （なし）                  | `agents: [...]`                     | GHC固有。サブエージェント呼び出し制限（省略時は制限なし） |
+| `user-invocable`         | `user-invocable`                    | CC/GHC共通                     |
+| `disable-model-invocation` | `disable-model-invocation`        | CC/GHC共通                     |
+
+> **旧版からの変更:**
+> - `_` プレフィックス規則を削除。GHC公式ドキュメントに記載なし。Qiita記事の著者独自規約であった
+> - `model` フィールドを「削除」から「変換」に変更。GHCが `model` フィールドをサポートするようになった
+> - `user-invocable`, `disable-model-invocation` を追加。CC/GHC双方で同名フィールドが追加された
 
 ### 5.3 プロンプト本文の変換
 
 | 項目                        | CC                               | GHC                               |
 |-----------------------------|----------------------------------|------------------------------------|
-| サブエージェント呼び出し      | `<name> サブエージェントに依頼`    | `_<name> をサブエージェントとして起動` |
+| サブエージェント呼び出し      | `<name> サブエージェントに依頼`    | `<name> をサブエージェントとして起動` |
 | リソースパス                 | `.claude/skills/blackpink/...`   | `.github/skills/blackpink/...`     |
-| 引数テンプレート             | `$ARGUMENTS`                     | `$ARGUMENTS`（共通）                |
+| 引数テンプレート             | `$ARGUMENTS`                     | 変換方法は下記参照                   |
+
+**引数テンプレートの変換:**
+
+CC と GHC で引数の扱いが異なる。
+
+| 用途                | CC                                | GHC prompt files              | GHC skills/agents       |
+|--------------------|-----------------------------------|-------------------------------|-------------------------|
+| 全引数展開          | `$ARGUMENTS`                      | テンプレート変数なし（末尾に自動付与） | テンプレート変数なし（コンテキストとして流入） |
+| 位置引数            | `$ARGUMENTS[N]` / `$N`           | `${input:variableName}`       | 非対応                   |
+| 名前付き引数        | `$name`（arguments宣言必要）       | `${input:variableName}`       | 非対応                   |
+
+- **エントリポイント（commands → prompt files）:** `$ARGUMENTS` を含む行を削除し、ユーザー入力が末尾に自動付与される前提で本文を調整する。位置引数を使っている場合は `${input:name}` に書き換える
+- **スキル・WF内:** GHCスキルはテンプレート変数非対応。`$ARGUMENTS` を含む行を自然言語の指示に書き換える（例: 「ユーザーが指定したテーマ」）
 
 ### 5.4 ツール名マッピング
 
 | CC              | GHC (VS Code)          | 備考                    |
 |-----------------|------------------------|------------------------|
-| `Read`          | `read/readFile`        | ファイル読み込み          |
-| `Grep`          | `search`               | テキスト検索             |
-| `Glob`          | `search`               | ファイルパターン検索      |
-| `Write`         | `edit`                 | ファイル書き込み          |
-| `Edit`          | `edit`                 | ファイル編集             |
-| `Bash`          | `execute`              | コマンド実行             |
+| `Read`          | `readFile`             | ファイル読み込み          |
+| `Grep`          | `search/codebase`      | テキスト検索             |
+| `Glob`          | `search/codebase`      | ファイルパターン検索（Grepと同一ツールに集約） |
+| `Write`         | `createFile`           | ファイル新規作成          |
+| `Edit`          | `editFiles`            | ファイル編集             |
+| `Bash`          | `runInTerminal`        | コマンド実行             |
 | `Agent`         | `agent/runSubagent`    | サブエージェント呼び出し   |
+
+> **注意:** GHCにはツールセット（`search`, `read`, `edit`, `execute`, `agent`）とその配下の個別ツール（`search/codebase`, `readFile` 等）がある。ツールセットを指定するとグループ内の全ツールが有効になる。上表は個別ツール名を記載しているが、`tools: ['search', 'readFile', 'runInTerminal', 'agent/runSubagent']` のようにツールセットと個別ツールを混在指定できる。
+>
+> GHCのツール名はUI経由で設定すると誤った形式で書き込まれる既知バグがある（[microsoft/vscode-copilot-release#14104](https://github.com/microsoft/vscode-copilot-release/issues/14104)）。手動記述を推奨。
+
+### 5.5 モデル名マッピング
+
+| CC              | GHC (VS Code)                      | 備考                    |
+|-----------------|------------------------------------|------------------------|
+| `haiku`         | `Claude Haiku 4.5 (copilot)`      | 軽量・高速              |
+| `sonnet`        | `Claude Sonnet 4.6 (copilot)`     | バランス型              |
+| `opus`          | `Claude Opus 4.6 (copilot)`       | 高性能                  |
+| `inherit`       | （フィールド省略）                   | 親のモデルを継承         |
+
+> GHCの `model` フィールドは配列も受け付ける（優先順にフォールバック）。単一モデルの場合は文字列で指定。
 
 
 ## 6. GHC側の前提設定
 
 ```json
 {
-  "chat.customAgentInSubagent.enabled": true
+  "chat.subagents.allowInvocationsFromSubagents": true
 }
 ```
+
+> **補足設定（必要に応じて）:**
+> - `chat.agentFilesLocations`: カスタムエージェントファイルの追加検索パス
+> - `chat.agentSkillsLocations`: スキルファイルの追加検索パス
+> - `chat.useCustomizationsInParentRepositories`: 親リポジトリからのカスタマイズ読み込み（モノレポ向け）
+> - `chat.useCustomAgentHooks`: エージェントスコープのフック有効化（Preview）
+
+> **旧版からの変更:** `chat.customAgentInSubagent.enabled` → `chat.subagents.allowInvocationsFromSubagents` に設定名が変更された。
 
 
 ## 7. 変換スクリプトの方針
@@ -1267,8 +1335,10 @@ esac
 1. CC側のファイルを読み込む
 2. フロントマターのフィールドをマッピングテーブルに従って変換する
 3. プロンプト本文中のリソースパス・サブエージェント呼び出しパターンを置換する
-4. ツール名を変換する
-5. GHC側のディレクトリ構造に配置する
+4. ツール名を変換する（5.4参照）
+5. モデル名を変換する（5.5参照）
+6. 引数テンプレートを変換する（5.3参照）
+7. GHC側のディレクトリ構造に配置する
 
 仕様変更時はマッピングテーブルのみ更新すればよい。
 
@@ -1304,6 +1374,10 @@ esac
 | CC スラッシュコマンド            | https://code.claude.com/docs/en/agent-sdk/slash-commands          |
 | GHC サブエージェント公式         | https://code.visualstudio.com/docs/copilot/agents/subagents       |
 | GHC カスタムエージェント         | https://code.visualstudio.com/docs/copilot/customization/custom-agents |
+| GHC プロンプトファイル           | https://code.visualstudio.com/docs/copilot/customization/prompt-files |
+| GHC エージェントスキル           | https://code.visualstudio.com/docs/copilot/customization/agent-skills |
+| GHC エージェントツール           | https://code.visualstudio.com/docs/copilot/agents/agent-tools     |
+| GHC ツール名バグ                | https://github.com/microsoft/vscode-copilot-release/issues/14104  |
 | GHC runSubagent実践 (Qiita)    | https://qiita.com/kenc_app/items/836bf0fa987884ff63da             |
 | GHC サブエージェント検証 (Zenn)  | https://zenn.dev/openjny/articles/2619050ec7f167                  |
 | CC サブエージェント出力仕様      | 「The parent receives the subagent's final message verbatim」(SDK docs) |
@@ -1313,6 +1387,6 @@ esac
 
 - 全レイヤー間のデータ受け渡しはLLMのプロンプト解釈を経由する。確定的な関数呼び出しではない
 - サブエージェントのJSON出力も「LLMがJSON形式で返す」という指示に基づくもの。100%保証ではない
-- CC側のサブエージェントはネスト不可（built-in制約）。GHC側も設計上ネスト禁止とする
-- GHCの `chat.customAgentInSubagent.enabled` はExperimental由来の設定。将来的にデフォルト化またはAPI変更の可能性がある
-- ツール名マッピングはCC/GHCのバージョンアップで変わりうる。マッピングテーブルの定期更新が必要
+- CC側のサブエージェントはネスト不可（built-in制約）。GHC側はデフォルト無効、`chat.subagents.allowInvocationsFromSubagents` で有効化可能（最大深度5）。本設計では深さ1のみ使用
+- GHCのツール名はバージョンアップやUI操作で変わりうる。マッピングテーブルの定期更新が必要
+- GHCは `.claude/` ディレクトリからもエージェント・スキルを読み込めるため、変換なしでの動作確認も検討に値する
