@@ -30,7 +30,7 @@
   "frontmatter": {
     "command": {
       "remove_fields": ["command"],
-      "add_fields": { "agent": "agent" }
+      "add_fields": { "agent": "agent", "tools": ["agent", "read", "search", "execute"] }
     },
     "agent": {
       "remove_fields": ["disallowedTools", "permissionMode", "maxTurns", "memory", "skills"],

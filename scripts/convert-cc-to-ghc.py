@@ -119,10 +119,11 @@ def convert_command(text, rules):
     for k, v in fm_rules["add_fields"].items():
         fields[k] = v
 
-    if "tools" in fields or "allowed-tools" in fields:
-        raw = fields.pop("allowed-tools", fields.pop("tools", ""))
-        if raw:
-            fields["tools"] = convert_tools(raw, rules)
+    if "allowed-tools" in fields:
+        raw = fields.pop("allowed-tools")
+        fields["tools"] = convert_tools(raw, rules)
+    elif "tools" in fields and isinstance(fields["tools"], str):
+        fields["tools"] = convert_tools(fields.pop("tools"), rules)
 
     if "model" in fields:
         fields["model"] = convert_model(fields["model"], rules)
