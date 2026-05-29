@@ -5,6 +5,14 @@ Skips the evaluation/optimization step.
 
 Flow: bp-song-finder → bp-show-planner
 
+## Critical: subagent context isolation
+
+Each subagent runs in an ISOLATED context. It can see ONLY the text you place in its
+request — not the user's chat, not prior steps, not any earlier subagent's output.
+So whenever a step says to pass a prior result, you MUST paste that result's COMPLETE,
+VERBATIM JSON into the request. Do not summarize, paraphrase, reference it indirectly,
+or omit it: the subagent cannot recover it on its own and will re-derive (wrong) data.
+
 ## Step 1: Song Search
 
 Delegate to the bp-song-finder subagent with the following instructions.
@@ -25,7 +33,7 @@ Delegate to the bp-show-planner subagent with the following instructions.
 
 Request:
 - Theme: (the user's theme)
-- Song data: (the full JSON result from Step 1)
+- Song data: PASTE the complete verbatim JSON returned by Step 1 here (the full object, not a summary or a reference)
 - members.json path: .claude/skills/blackpink/resources/members.json
 - Optimization level: basic
 

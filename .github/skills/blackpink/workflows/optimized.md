@@ -5,6 +5,14 @@ then generate a polished show plan.
 
 Flow: bp-song-finder → bp-setlist-evaluator → bp-show-planner
 
+## Critical: subagent context isolation
+
+Each subagent runs in an ISOLATED context. It can see ONLY the text you place in its
+request — not the user's chat, not prior steps, not any earlier subagent's output.
+So whenever a step says to pass a prior result, you MUST paste that result's COMPLETE,
+VERBATIM JSON into the request. Do not summarize, paraphrase, reference it indirectly,
+or omit it: the subagent cannot recover it on its own and will re-derive (wrong) data.
+
 ## Step 1: Song Search
 
 Delegate to the bp-song-finder subagent with the following instructions.
@@ -24,7 +32,7 @@ If the result contains `"status": "error"`, show the error to the user and stop.
 Delegate to the bp-setlist-evaluator subagent with the following instructions.
 
 Request:
-- Song search result: (the full JSON result from Step 1)
+- Song search result: PASTE the complete verbatim JSON returned by Step 1 here (the full object, not a summary or a reference)
 - members.json path: .github/skills/blackpink/resources/members.json
 - Target setlist length: 8-10 songs
 - Evaluation criteria: energy flow, mood transitions, solo balance, dance break spacing
@@ -39,7 +47,7 @@ Delegate to the bp-show-planner subagent with the following instructions.
 
 Request:
 - Theme: (the user's theme)
-- Evaluated setlist: (the full JSON result from Step 2)
+- Evaluated setlist: PASTE the complete verbatim JSON returned by Step 2 here (the full object, not a summary or a reference)
 - members.json path: .github/skills/blackpink/resources/members.json
 - Optimization level: full
 
