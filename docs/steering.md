@@ -149,10 +149,10 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
 
 **フェーズ2-3 GHCテスト完了:** optimized×2 / quick / versus の3シナリオ全PASS（マクロ構造）。
 
-**確認済み課題（改善は2-4比較後に検討）:**
-1. evaluator/planner がcodebase検索を繰り返す（JSON受け渡しが不安定）。versusでは悪化し、GHCが自前のセッションストア／チャットリソースファイルを読んで中間結果を復元していた
-2. evaluator のモデル名指定が失敗することがある
-3. planner の最終出力がJSON構造ではなく整形済みmarkdown
+**確認済み課題（当初メモ。2-4a続報で訂正済み — 下記「2-4a 続報」参照）:**
+1. evaluator/planner がcodebase検索を繰り返す（JSON受け渡しが不安定）に見えた → **訂正: GHCの正規リソース受け渡し。planner出力は無傷。中間ホップのみ未検証**
+2. evaluator のモデル名指定が失敗することがある → **本物（有効）**
+3. planner の最終出力がmarkdown → **訂正: 誤り。plannerは有効JSONを返す。markdownは親のStep4整形＝設計通り**
 
 ### 2-4a 差分の特定（2026-05-29）
 
@@ -164,8 +164,24 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
 | 2 | モデル名指定 | `sonnet` で動作 | `Claude Sonnet 4.6 (copilot)` がevaluatorで時々失敗→指定なしリトライで成功 | **YES**（間欠的） |
 | 3 | 最終出力形式 | 個別追跡なし（CC側 planner サブエージェント出力形式は未記録） | planner が markdown を直接返却 | **要確認**（CC側の事実不足） |
 
-**観察:** 結果（曲・曲数・構造）は CC/GHC 同等。逸脱しているのはプロセス（受け渡し経路）。ただしプロセス不安定がリトライ・失敗を誘発し再現性・堅牢性にリスク。
-**2-4a 残作業:** 差分3のCC側 planner サブエージェント出力形式を確認する。
+### 2-4a 続報: content.json 解析による差分1・3の訂正（2026-05-29）
+
+GHCのチャット session-resources を解析（`chat-session-resources/*/call_*/content.json` + `schema.json`、本日3セッション分）。
+
+**事実:**
+- 3セッションすべてに `schema.json` が自動生成され（3/3）、`content.json` は**全て有効JSON・planner契約に完全準拠**（single×1=white, comparative×2）。
+- これらは GHC が**大きな構造化サブエージェント出力を「リソース」として実体化する正規の仕組み**。サブエージェントのJSON返り値を保存しJSON Schemaを自動生成、親がそれを読む（＝CCのプロンプト内JSON受け渡しのGHC版）。
+
+**当初課題の訂正:**
+
+| 当初課題 | 訂正後の判定 | 根拠 |
+|---------|------------|------|
+| 3. planner が markdown を返す | **誤り（反証）** | planner出力は全ケース有効JSON。ユーザーが見た markdown は親のStep 4「Present to user」整形＝設計通り。トレースの最終表示を返り値と誤読していた |
+| 1. 受け渡しが壊れ内部ファイルから即興復元 | **大幅縮小・再定義** | content.json読込はGHCの正規リソース受け渡し。planner→親のJSONは3件とも無傷。残る論点は finder→evaluator / evaluator→planner の中間ホップ（リソース化されず未捕捉）のみ。ただしplanner出力が正しいsong_id/データを含む＝正しいデータは最終的に流れている |
+| 2. モデル名指定の失敗 | **有効（本物）** | 実際にリトライ発生。content.jsonとは無関係に成立 |
+
+**結論:** 「3つの課題」のうち課題3は消滅、課題1は中間ホップのみに縮小、課題2だけが本物。当初トレースの語り口を誤読していた。
+**2-4a 残論点:** 中間ホップ（finder→evaluator、evaluator→planner）が clean かは未捕捉。必要なら 2-4b で扱う。
 
 
 ## タスク
@@ -198,7 +214,7 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
   - 全`.claude/`パス参照が`.github/`に変換済み、残存なし確認済み
 - [x] **2-3. GHC側テスト** — 2026-05-29 完了。optimized（white）2回 + quick（party）+ versus（fierce vs emotional）全PASS
 - [ ] **2-4. CC/GHC結果比較** — 「同等の結果」が得られているかを判定し、同等でない点を改善ループに渡す
-  - [~] **2-4a. 差分の特定** — 2026-05-29 大半完了。3差分を列挙（テスト結果サマリ「2-4a」参照）。残: 差分3のCC側 planner 出力形式の確認
+  - [x] **2-4a. 差分の特定** — 2026-05-29 完了。3差分を列挙後、content.json解析で訂正（テスト結果サマリ「2-4a」「2-4a続報」参照）。結論: 課題3消滅、課題1は中間ホップのみに縮小、課題2が本物
   - [ ] **2-4b. 根本原因分析と分類** — 各差分を事実ベースで分析し、(A)マッピング/定義側で修正可能 / (B)プラットフォーム固有の限界 に分類
   - [ ] **2-4c. 改善ループ** — (A)について改善案を出す → 合意 → 改善 → GHCで再測定。同等になるまで繰り返す。(B)は制約として記録
 
