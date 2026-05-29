@@ -28,7 +28,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] **フェーズ2-0完了**（2026-05-25） — マッピングテーブルを公式ドキュメントに基づき最新化（設計書セクション5）
 - [x] **フェーズ2-1完了**（2026-05-25） — 変換スクリプト作成（`scripts/convert-cc-to-ghc.py` + `scripts/mapping-rules.json`）
 - [x] **フェーズ2-2完了**（2026-05-25） — GHC側ファイル生成済み
-- **フェーズ2-3 実施中**（2026-05-27〜） — GHC側テスト進行中
+- **フェーズ2-3 実施中**（2026-05-27〜） — GHC側テスト進行中（optimized×2・quick PASS、versus 未実施）
 
 
 ## テスト結果サマリ
@@ -124,7 +124,18 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
 | evaluator モデル指定 | **OK** | リトライなし |
 | JSON受け渡し | **要注意** | evaluator/plannerがcodebase検索を繰り返す |
 
-**残テスト:** quick / versus シナリオ未実施
+**GHCテスト3回目（`/bp` party、prompt file 経由、quick WF）:**
+
+| 確認ポイント | 結果 | 備考 |
+|-------------|------|------|
+| WF選択 | **OK** | "quick party setlist" → quick を選択 |
+| サブエージェント呼び出し | **OK** | finder → planner の2段（evaluator スキップ＝quick仕様通り）|
+| filter-songs.sh 実行 | **OK** | mood party + energy 80 100 の2回（ログ12:38に一致）|
+| 曲数 | **OK** | 8曲（上限8ちょうど）、全曲DB内 |
+| JSON受け渡し | **要注意** | planner呼び出し前にcodebase検索を複数回（既知課題1の再現）|
+| planner最終出力 | **要注意** | JSON構造でなく整形済みmarkdown（既知課題3の再現）|
+
+**残テスト:** versus シナリオ未実施
 
 **確認済み課題（改善は全テスト完了後に検討）:**
 1. evaluator/planner がcodebase検索を繰り返す（JSON受け渡しが不安定）
@@ -160,7 +171,7 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
 - [x] **2-2. GHC側ファイル生成** — 2026-05-25 完了
   - 11ファイル生成（prompts×1, agents×3, skills×1, workflows×3, resources×3）
   - 全`.claude/`パス参照が`.github/`に変換済み、残存なし確認済み
-- [ ] **2-3. GHC側テスト** — 進行中。optimized（white）2回完了、quick / versus 未実施
+- [ ] **2-3. GHC側テスト** — 進行中。optimized（white）2回 + quick（party）完了、versus 未実施
 - [ ] **2-4. CC/GHC結果比較** — 同等の結果が得られるか確認
 
 ### フェーズ3: 仕上げ
