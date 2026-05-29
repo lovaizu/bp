@@ -28,7 +28,8 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] **フェーズ2-0完了**（2026-05-25） — マッピングテーブルを公式ドキュメントに基づき最新化（設計書セクション5）
 - [x] **フェーズ2-1完了**（2026-05-25） — 変換スクリプト作成（`scripts/convert-cc-to-ghc.py` + `scripts/mapping-rules.json`）
 - [x] **フェーズ2-2完了**（2026-05-25） — GHC側ファイル生成済み
-- **フェーズ2-3 実施中**（2026-05-27〜） — GHC側テスト進行中（optimized×2・quick PASS、versus 未実施）
+- [x] **フェーズ2-3完了**（2026-05-29） — GHC側テスト 3シナリオ全PASS（optimized×2・quick・versus）
+- **フェーズ2-4 実施中**（2026-05-29〜） — CC/GHC結果比較
 
 
 ## テスト結果サマリ
@@ -135,10 +136,21 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
 | JSON受け渡し | **要注意** | planner呼び出し前にcodebase検索を複数回（既知課題1の再現）|
 | planner最終出力 | **要注意** | JSON構造でなく整形済みmarkdown（既知課題3の再現）|
 
-**残テスト:** versus シナリオ未実施
+**GHCテスト4回目（`/bp fierce vs emotional`、prompt file 経由、versus WF）:**
 
-**確認済み課題（改善は全テスト完了後に検討）:**
-1. evaluator/planner がcodebase検索を繰り返す（JSON受け渡しが不安定）
+| 確認ポイント | 結果 | 備考 |
+|-------------|------|------|
+| WF選択 | **OK** | "fierce vs emotional" → versus を選択 |
+| サブエージェント呼び出し | **OK** | finder(A)+finder(B) → evaluator(comparative) → planner の4段（versus仕様通り）|
+| filter-songs.sh 実行 | **OK** | fierce側3回 + emotional側3回 = 計6回（ログ13:11-13:12に一致）|
+| 曲数 | **OK** | fierce 8曲・emotional 8曲（目標8-10内）、全曲DB内 |
+| comparative推薦 | **OK** | fierce を推薦、flow score 88 vs 82 提示 |
+| JSON受け渡し | **要注意（悪化）** | 課題1が最も顕著。codebase検索多数 + session store照会 + copilot-chatの session-resources/content.json を直接Readして中間結果を復元 |
+
+**フェーズ2-3 GHCテスト完了:** optimized×2 / quick / versus の3シナリオ全PASS（マクロ構造）。
+
+**確認済み課題（改善は2-4比較後に検討）:**
+1. evaluator/planner がcodebase検索を繰り返す（JSON受け渡しが不安定）。versusでは悪化し、GHCが自前のセッションストア／チャットリソースファイルを読んで中間結果を復元していた
 2. evaluator のモデル名指定が失敗することがある
 3. planner の最終出力がJSON構造ではなく整形済みmarkdown
 
@@ -171,7 +183,7 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
 - [x] **2-2. GHC側ファイル生成** — 2026-05-25 完了
   - 11ファイル生成（prompts×1, agents×3, skills×1, workflows×3, resources×3）
   - 全`.claude/`パス参照が`.github/`に変換済み、残存なし確認済み
-- [ ] **2-3. GHC側テスト** — 進行中。optimized（white）2回 + quick（party）完了、versus 未実施
+- [x] **2-3. GHC側テスト** — 2026-05-29 完了。optimized（white）2回 + quick（party）+ versus（fierce vs emotional）全PASS
 - [ ] **2-4. CC/GHC結果比較** — 同等の結果が得られるか確認
 
 ### フェーズ3: 仕上げ
