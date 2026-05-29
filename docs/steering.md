@@ -28,7 +28,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] **フェーズ2-0完了**（2026-05-25） — マッピングテーブルを公式ドキュメントに基づき最新化（設計書セクション5）
 - [x] **フェーズ2-1完了**（2026-05-25） — 変換スクリプト作成（`scripts/convert-cc-to-ghc.py` + `scripts/mapping-rules.json`）
 - [x] **フェーズ2-2完了**（2026-05-25） — GHC側ファイル生成済み
-- **フェーズ2-3 実施中**（2026-05-27） — GHC側テスト進行中
+- **フェーズ2-3 実施中**（2026-05-27〜） — GHC側テスト進行中
 
 
 ## テスト結果サマリ
@@ -94,6 +94,43 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
 | filter-songs.sh の実行 | **OK** | 全シナリオでログ出力を確認（合計24回実行） |
 | エラーJSON形式の統一 | N/A | 全シナリオ成功のためエラーパス未検証 |
 
+### GHC側テスト（2026-05-27〜29、フェーズ2-3）
+
+**テスト前の修正:**
+- prompt file に `tools: ['agent', 'read', 'search', 'execute']` が必要と判明。マッピングルール・変換スクリプトに反映済み
+- `/bp` 呼び出し（prompt file 経由）は tools 追加後に動作確認済み
+- `/blackpink` 呼び出し（スキル直接）は tools 追加前から動作
+
+**GHCテスト1回目（`/blackpink white`、スキル直接呼び出し）:**
+
+| 確認ポイント | 結果 | 備考 |
+|-------------|------|------|
+| WF選択 | **OK** | optimized を選択 |
+| サブエージェント呼び出し | **OK** | finder → evaluator → planner の3段 |
+| filter-songs.sh 実行 | **OK** | 12回実行 |
+| 曲数 | **OK** | 9曲、全曲DB内 |
+| evaluator モデル指定 | **要注意** | 1回目失敗→モデル指定なしでリトライ成功 |
+| JSON受け渡し | **要注意** | evaluator→planner 間で1回失敗→リトライ成功 |
+
+**GHCテスト2回目（`/bp white`、prompt file 経由）:**
+
+| 確認ポイント | 結果 | 備考 |
+|-------------|------|------|
+| prompt → skill | **OK** | `bp.prompt.md` → `SKILL.md` 読み込み成功 |
+| WF選択 | **OK** | optimized を選択 |
+| サブエージェント呼び出し | **OK** | finder → evaluator → planner の3段 |
+| filter-songs.sh 実行 | **OK** | 7回以上実行 |
+| 曲数 | **OK** | 8曲、全曲DB内 |
+| evaluator モデル指定 | **OK** | リトライなし |
+| JSON受け渡し | **要注意** | evaluator/plannerがcodebase検索を繰り返す |
+
+**残テスト:** quick / versus シナリオ未実施
+
+**確認済み課題（改善は全テスト完了後に検討）:**
+1. evaluator/planner がcodebase検索を繰り返す（JSON受け渡しが不安定）
+2. evaluator のモデル名指定が失敗することがある
+3. planner の最終出力がJSON構造ではなく整形済みmarkdown
+
 
 ## タスク
 
@@ -123,7 +160,7 @@ filter-songs.sh にログ出力（`/tmp/bp-filter.log`）を仕込んだ上で�
 - [x] **2-2. GHC側ファイル生成** — 2026-05-25 完了
   - 11ファイル生成（prompts×1, agents×3, skills×1, workflows×3, resources×3）
   - 全`.claude/`パス参照が`.github/`に変換済み、残存なし確認済み
-- [ ] **2-3. GHC側テスト** — 同じ3シナリオをGHC（VS Code Copilot）で実行
+- [ ] **2-3. GHC側テスト** — 進行中。optimized（white）2回完了、quick / versus 未実施
 - [ ] **2-4. CC/GHC結果比較** — 同等の結果が得られるか確認
 
 ### フェーズ3: 仕上げ
