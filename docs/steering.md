@@ -204,6 +204,27 @@ GHCのチャット session-resources を解析（`chat-session-resources/*/call_
 
 **改善案（2-4c 1周目、要合意）:** mapping-rules.json のモデル値を単一文字列→フォールバック配列に変更し、変換スクリプトが `model:` を配列出力するよう対応 → GHC再生成 → GHC再測定。
 
+### 2-4 実行メカニズムの検証: transcript解析（2026-05-29）★最重要
+
+目的「サブエージェントが両プラットフォームで動くか」の核心4問を、GHCの生実行ログ（`GitHub.copilot-chat/transcripts/*.jsonl`、6セッション）で事実検証。
+
+**検証法:** 各 `runSubagent` ツールの execution_start〜complete の窓の内側に現れるツール呼び出し・`user.message`・turn を解析。窓内に専用プロンプト注入＋自前ツール実行があれば「別コンテキストで動いた」証拠。
+
+| 核心の問い | 判定 | 証拠 |
+|-----------|------|------|
+| ①起動したか | **YES** | 全6セッションで runSubagent 発火（finder/evaluator/planner） |
+| ②別コンテキストか | **YES（6/6再現）** | runSubagent窓の内側に subagent専用 user.message＋自前turn＋自前ツール呼び出し |
+| ③サブエージェントからスクリプト実行 | **YES（6/6再現）** | finder窓の内側で run_in_terminal（bash filter-songs.sh）。finder は 8/8 成功 |
+| ④JSON受け渡し | **条件付きYES** | finder→親は8/8 clean。downstream(evaluator/planner)は session_store_sql＋ファイル再読込＋semantic_search で入力取得（間接方式、動くが直接でない） |
+
+**再現性の定量（runSubagent成否、全6セッション集計）:**
+```
+finder    : 8 OK / 0 FAIL   (100% — 起動・別コンテキスト・スクリプト実行は盤石)
+evaluator : 4 OK / 3 FAIL   (初回43%失敗、全てリトライで回復)
+planner   : 6 OK / 1 FAIL   (86%、1失敗回復)
+```
+**結論:** 起動・コンテキスト分離・スクリプト実行は100%再現。再現性リスクは downstream サブエージェント（特に evaluator）の初回起動失敗に局在。失敗は早期セッションに集中、直近versus 2回は clean → 課題2（モデル一時可用性）と整合。→ **2-4c のモデル配列フォールバックがデータで正当化された（再現性確保の本丸）。**
+
 
 ## タスク
 
