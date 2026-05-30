@@ -36,6 +36,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] **フェーズ2-3完了**（2026-05-29） — GHC側テスト 3シナリオ全PASS（optimized×2・quick・versus）
 - **フェーズ2-4 実施中**（2026-05-29〜） — transcript解析で実行メカニズムを事実検証。①起動②別コンテキスト③スクリプト実行は実証。**④JSON受け渡しは非決定的（設計通りでない）と判明** = 両プラットフォーム共通の核心課題。「100%再現」等の過剰表現は撤回済み
 - **アプローチ転換（2026-05-30）** — ビッグバン検証を中止し、**段階的ビルドアップ**に移行。要素が入り組んで1変数に絞れない／直すと別が壊れる、を解消するため。目的は不変。詳細は「## 新アプローチ」
+- **A-1（CC）実施中（2026-05-30〜）** — SKILL.md + optimized.md を基準1で再構築済み。CCで `/blackpink white` ×2 の測定待ち。再開手順は「## 新アプローチ → 現在の作業状態 ★RESUME」
 
 
 ## テスト結果サマリ
@@ -312,6 +313,23 @@ planner   : 6 OK / 1 FAIL
   - [ ] B-1(1WF): CC→GHC自動変換→CC/GHC … [ ] B-2(2WF) … と積み上げ
 - 各段で verify-run.py（or 手解析）で層2不変条件を検証してから次へ。Aもさらに細かく割ってよい。
 - **旧フェーズ3（マッピング確定・設計書更新）はこのラダー完了後に回収。**
+
+### 現在の作業状態（次セッションはここから）★RESUME
+
+**A-1（CC）実施中。** 再構築済みファイル（基準1・best-practice準拠）:
+- `.claude/skills/blackpink/SKILL.md` — ルーティングのみに作り直し（概要/ペルソナ/「Read and follow」を排除）
+- `.claude/skills/blackpink/workflows/optimized.md` — A版（サブエージェント無し・親が各Stepを実行、番号手順＋明示IN/OUT）
+
+**まだ旧スタイル（big-bang期、未改修）:**
+- `.claude/skills/blackpink/workflows/quick.md` / `versus.md`（subagent委譲＋「Critical: isolation」preamble付き）
+- `.github/` 配下すべて（旧optimized等を再生成したもの）。**A-1合格後の A-2 で再変換する**まで触らない。
+
+**次セッションの最初の一手:** ユーザーが新規CCセッションで `/blackpink white` を2回実行した transcript（`~/.claude/projects/-Users-kiyo-work-lovaizu-bp/<session>.jsonl`、mtimeで最新2本）を解析し、層2の合否を判定:
+1. "white" → optimized にルーティング 2. Step1→2→3 順守 3. filter-songs.sh 実行（`/tmp/bp-filter.log`併用）4. 各Step OUT形が出る。**選曲一致は見ない（層3判断）**。
+- 合格 → quick/versus も同形に作り直し → A-2（GHC自動変換）→ A-3。
+- 不合格 → optimized.md を基準1の範囲で改善し再測定（1変数ずつ）。
+
+**観測手順の詳細は本セクション「観測・検証方法」を参照。検証は貼り付けでなく transcript を読む。**
 
 
 ## タスク（旧・参考。前向きの計画は「## 新アプローチ」が正）
