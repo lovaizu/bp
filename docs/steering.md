@@ -357,8 +357,9 @@ quick.md / versus.md を optimized.md と同形のA版に再構築（commit c586
 **A-2 進捗:**
 - [x] **step1 完了（2026-06-02）** — 旧 big-bang 期のサブエージェント定義3つを**両プラットフォームから削除**（ユーザー承認＝選択肢1）。`.claude/agents/bp-*.md`（3）と `.github/agents/bp-*.agent.md`（3）を `git rm`。理由: A版はサブエージェント無し（不変条件5＝委譲なし）であり、旧agentは基準1違反（ペルソナ・判断動詞）でB段階の流用元にもならない。`python3 scripts/convert-cc-to-ghc.py` で `.github/` を再生成＝**agent無しのクリーンな8ファイル**（prompts/bp.prompt.md + skills配下SKILL/3WF/3resource）。`.claude/agents/` は消滅。A-1のCC合格は維持（削除は委譲の誘惑を減らすのみ）。
   - 注: `bp.prompt.md` の `tools:` に `agent` が残る（mapping-rules の add_fields。2-3で「prompt file には tools 必須」と実証済み）。stage Aでは未使用だが、実証済み要件のため温存。GHCが無委譲なら不変条件5はPASS、もし委譲したらそれ自体が知見。
-- [ ] **step2 進行中** — verify-run.py に **GHCモード**を追加。GHC transcript の事実（下記「GHC transcript 形式」）に基づき実装。**OUT形の検出源だけが stage-A GHC で未確定**（端末stdoutは transcript に出ない／content.json は現状空）。→ 最初の実 stage-A GHC ラン1本で較正してから本実装を確定する方針。
-- [ ] step3 — GHC（VS Code）で `/blackpink white` / `quick party setlist` / `fierce vs emotional` を各2回 → GHCモードで判定。
+- [x] **step2 完了（2026-06-02）** — verify-run.py に **GHCモード**を追加（commit 60c501e）。GHC transcript を CC と同じ analyzed-dict に落とし `judge()`（層2の5不変条件）を共有。`--platform {auto,cc,ghc}`（auto は先頭イベントで判別）、GHC latest picker、`detect_platform` を追加。**検証済み:** CC A-1 ランは 2/2 PASS のまま（回帰なし）／big-bang GHC transcript は正しく FAIL（runSubagent=3 を検出、cat 経由の WF 読込も検出）。
+  - ⚠️ **未確定（step3 で較正）:** stage-A GHC で親が S1/S2 の中間OUTを**チャット本文に出すか／端末stdoutに隠すか**。後者だと端末出力は transcript に出ないため OUT形マーカーが見えず check4 が落ちうる。これは判定器の欠陥でなく観測限界。最初の実 stage-A GHC ラン1本で確認し、必要なら検出源を調整する。
+- [ ] **step3 進行中（ユーザー作業）** — GHC（VS Code）で実行。**まず較正用に1本だけ** `/blackpink white` を実行（直前に `: > /tmp/bp-filter.log`、1ラン1 transcript）。→ こちらで GHCモード判定＋OUT形検出を較正。その後 `/blackpink white`(2本目) / `quick party setlist` / `fierce vs emotional` を各2回（計6本）。判定: `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <transcript.jsonl>`。
 - [ ] step4 — 全PASS → A-3（CC/GHC両方OKの確認・差分文書化）。不合格 → 変換ルール or WF文言を1変数ずつ修正し再変換・再測定。
 
 **GHC transcript 形式（2026-06-02 実ログ6本を解析して確定。`workspaceStorage/<ws>/GitHub.copilot-chat/transcripts/*.jsonl`）:**
