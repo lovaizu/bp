@@ -155,9 +155,12 @@ def analyze(path):
 
         if bt == "text":
             txt = b.get("text", "") or ""
-            # /blackpink command args — capture ONLY from the block that holds the
-            # blackpink command-name (a preceding /clear also emits empty args).
-            if cmd_args is None and "<command-name>/blackpink</command-name>" in txt:
+            # Entry-command args — capture ONLY from the block holding the bp
+            # entry command-name (/bp the command, or /blackpink the skill); a
+            # preceding /clear also emits an empty <command-args>, so we must
+            # not read args from just any block.
+            if cmd_args is None and re.search(
+                    r"<command-name>/(?:bp|blackpink)</command-name>", txt):
                 mcmd = re.search(r"<command-args>([^<]*)</command-args>", txt)
                 if mcmd:
                     cmd_args = mcmd.group(1).strip()
@@ -421,12 +424,13 @@ def pick_latest(n):
     files = sorted(glob.glob(os.path.join(PROJECT_TRANSCRIPT_DIR, "*.jsonl")),
                    key=os.path.getmtime, reverse=True)
     picked = []
+    pat = re.compile(r"<command-name>/(?:bp|blackpink)</command-name>")
     for f in files:
         try:
             head = open(f, encoding="utf-8").read(20000)
         except Exception:
             continue
-        if "<command-name>/blackpink</command-name>" in head:
+        if pat.search(head):
             picked.append(f)
         if len(picked) >= n:
             break

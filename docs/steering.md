@@ -359,7 +359,16 @@ quick.md / versus.md を optimized.md と同形のA版に再構築（commit c586
   - 注: `bp.prompt.md` の `tools:` に `agent` が残る（mapping-rules の add_fields。2-3で「prompt file には tools 必須」と実証済み）。stage Aでは未使用だが、実証済み要件のため温存。GHCが無委譲なら不変条件5はPASS、もし委譲したらそれ自体が知見。
 - [x] **step2 完了（2026-06-02）** — verify-run.py に **GHCモード**を追加（commit 60c501e）。GHC transcript を CC と同じ analyzed-dict に落とし `judge()`（層2の5不変条件）を共有。`--platform {auto,cc,ghc}`（auto は先頭イベントで判別）、GHC latest picker、`detect_platform` を追加。**検証済み:** CC A-1 ランは 2/2 PASS のまま（回帰なし）／big-bang GHC transcript は正しく FAIL（runSubagent=3 を検出、cat 経由の WF 読込も検出）。
   - ⚠️ **未確定（step3 で較正）:** stage-A GHC で親が S1/S2 の中間OUTを**チャット本文に出すか／端末stdoutに隠すか**。後者だと端末出力は transcript に出ないため OUT形マーカーが見えず check4 が落ちうる。これは判定器の欠陥でなく観測限界。最初の実 stage-A GHC ラン1本で確認し、必要なら検出源を調整する。
-- [ ] **step3 進行中（ユーザー作業）** — GHC（VS Code）で実行。**まず較正用に1本だけ** `/blackpink white` を実行（直前に `: > /tmp/bp-filter.log`、1ラン1 transcript）。→ こちらで GHCモード判定＋OUT形検出を較正。その後 `/blackpink white`(2本目) / `quick party setlist` / `fierce vs emotional` を各2回（計6本）。判定: `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <transcript.jsonl>`。
+- [ ] **step3 進行中（ユーザー作業）** — GHC（VS Code）で実行。
+  - **★入口の訂正（2026-06-02、ユーザー指摘）:** 測定は `/blackpink`（スキル直叩き）でなく **`/bp`（エントリ＝commands/bp.md・prompts/bp.prompt.md）から**行う。理由: ①`bp→SKILL移譲` は3層モデルの**配管層**であり A の検証対象。`/blackpink` はこの層を飛ばす＝未検証リスクを残す（「単純だから安全」と*測らず*断定するのは事実ベース違反）。②CC↔GHC を**同一入口**で測らないと「両方で再現」の証拠にならない。③`/bp` は変換成果物 `bp.prompt.md` 自体を初めてテストする。
+  - **較正用GHCラン1本（16125f49, `/blackpink white`）の結果＝不成立（操作的失敗）:** 親が filter-songs.sh を全moodタグでループする複雑な1行（`jq` のクォート不正）を組んで**ハング**→セットリスト生成前に終了。verify-run.py は正しく FAIL を返した（ログ0行＝filter実際には未実行、を正しく検出。委譲なし=PASS・ルーティング=PASS）。**クリーンな成功ランは未取得**＝check4(OUT形)がGHCで成立しうるかは依然未確定。
+  - **判定器更新（2026-06-02）:** CC側 theme 抽出を `/blackpink` 決め打ちから `/(?:bp|blackpink)` に一般化（`/bp` の CC 判定が可能に。`/clear` の空argsは引き続き無視）。
+- [ ] **step4（訂正）= 両プラットフォームを `/bp` で測り直す。**
+  - CC（A-1 は `/blackpink` で測定済み＝SKILL以下は有効だが `bp→SKILL` 層は未測定）: `/bp white`×2 / `/bp quick party setlist`×2 / `/bp fierce vs emotional`×2。
+  - GHC: 同じ6本を `/bp` で（前回の `/blackpink` 較正ランは入口違い＋ハングで不成立）。
+  - 各ランの作法: 直前に `: > /tmp/bp-filter.log`、1ラン1 transcript（`/clear`相当でコールド）。判定 CC=`verify-run.py <t.jsonl>`、GHC=`verify-run.py --platform ghc --theme '<theme>' <t.jsonl>`。
+  - 全PASS → A-3（CC/GHC両方OK・差分文書化）。不合格 → 変換ルール or WF文言を1変数ずつ修正し再変換・再測定。
+  - 注: `/tmp/bp-filter.log` は共有グローバルの揮発ログ。A-1 の log エントリは本セッションで reset 済み（過去ランの check3 は再判定すると log 不在で落ちるが、記録時点の 6/6 PASS は有効。log は transcript の一部ではない）。
 - [ ] step4 — 全PASS → A-3（CC/GHC両方OKの確認・差分文書化）。不合格 → 変換ルール or WF文言を1変数ずつ修正し再変換・再測定。
 
 **GHC transcript 形式（2026-06-02 実ログ6本を解析して確定。`workspaceStorage/<ws>/GitHub.copilot-chat/transcripts/*.jsonl`）:**
