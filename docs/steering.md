@@ -352,12 +352,23 @@ quick.md / versus.md を optimized.md と同形のA版に再構築（commit c586
 
 ### 現在の作業状態（次セッションはここから）★RESUME
 
-**A-1（CC）完了＝3WF×2ラン 6/6 全PASS（2026-06-02、`/blackpink` 入口）。A-2 進行中: step1・step2 完了。step3 測定に着手＝CCスモーク `/bp white` 1本 PASS（下記）。残り＝CC 5本＋GHC 6本。**
+**A-1（CC）完了＝3WF×2ラン 6/6 全PASS（2026-06-02、`/blackpink` 入口）。A-2 進行中: step1・step2 完了。step3＝CC `/bp` 入口 6/6 全PASS 完了（下記）。残り＝GHC 6本。**
 
-**★スモークラン結果（2026-06-02、`/bp` 入口）:** CC `/bp white` をコールドで1本（transcript `4f58b8b6`）→ **verify-run.py 5/5 全PASS**（ルーティング white→optimized / Step順 S1≤S2≤S3 / filter 7-in-window / OUT形 S1/S2/S3 / 委譲なし Task=0）。→ **`bp→SKILL移譲`（配管層）が `/bp` 入口でも有効と確認**。`/blackpink` で測ったA-1の層2が入口を変えても決定的に再現。残りラン（CC5・GHC6）に進む。
+**★CC `/bp` 入口 6/6 全PASS（2026-06-02）:** 6本すべて verify-run.py 5/5 PASS。**`/bp` 入口でも3WFの層2が決定的に再現**＝A-1（`/blackpink` 入口）と同結果がエントリ込みで確認。**`bp→SKILL移譲`（配管層）も有効。**
 
-**★NEXT ACTION（次セッションはここから）:** CC 残り5本（`/bp white`×1・`/bp quick party setlist`×2・`/bp fierce vs emotional`×2）→ GHC 6本（同一テーマを `/bp` で）。各ランはユーザー操作のコールドセッションで。判定はエージェントが verify-run.py で実施。
-- 測定手順: ①各ランの直前に `: > /tmp/bp-filter.log` ②**新規/コールドのセッション**で1ラン（CC=`/clear`してから `/bp <theme>`、GHC=VS Codeで `/bp <theme>`）③1ラン=1 transcript。
+| WF / theme | transcript | 結果 |
+|-----------|-----------|------|
+| optimized `white` r1 | 4f58b8b6 | PASS（スモーク）|
+| optimized `white` r2 | 2ce83014 | PASS |
+| quick `party` r1 | 9b594c78 | PASS |
+| quick `party` r2 | fd304ac5 | PASS |
+| versus `fierce vs emotional` r1 | b5985690 | PASS |
+| versus `fierce vs emotional` r2 | 3b519ba9 | PASS |
+
+**⚠️ 計器の教訓（リセット運用）:** filter-songs.sh の証拠ログ `/tmp/bp-filter.log` は**貯めっぱなし運用が正**（各ランの時間窓で in-window 判定＝PASS方向にしか動かない）。当初 `reset` をランと非同期に複数回実行し、前ランのログ行を後続リセットで消した結果、white r2/quick r1/versus r1 の初回測定が check3 のみアーティファクトFAIL（bash参照≥1・他4条件PASSで filter実行自体は transcript で確認できたが、ログ証拠を喪失）。→ **貯めっぱなしで再測定し3本ともクリーン5/5 PASS**（上表）。**今後の作法: ログはリセットしない。各ランは時間窓で切り分ける。**
+
+**★NEXT ACTION（次セッションはここから）:** GHC 6本（同一6テーマを `/bp` で）。各ランはユーザー操作のコールドセッションで。判定はエージェントが verify-run.py --platform ghc で実施。
+- 測定手順: ①**ログはリセットしない（貯めっぱなし）** ②**新規/コールドのセッション**で1ラン（GHC=VS Codeで `/bp <theme>`）③1ラン=1 transcript。
 - 判定: CC=`python3 scripts/verify-run.py <t.jsonl>`／GHC=`python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>`。
 - ⚠️ **測定は必ずユーザー操作のコールドセッションで行う。今動いているセッションの中で `/bp` を起動して測ってはいけない**（このセッションは steering・WF・振り分けを全部知っている＝汚染。かつ巨大な複数目的 transcript で1ラン1ファイルにならない。A-1 と同条件にもならない）。エージェントの役割は transcript の判定と記録のみ。
 
@@ -366,17 +377,8 @@ quick.md / versus.md を optimized.md と同形のA版に再構築（commit c586
   - 注: `bp.prompt.md` の `tools:` に `agent` が残る（mapping-rules の add_fields。2-3で「prompt file には tools 必須」と実証済み）。stage Aでは未使用だが実証済み要件のため温存。GHCが無委譲なら不変条件5はPASS、委譲したらそれ自体が知見。
 - [x] **step2 完了** — verify-run.py に **GHCモード**追加（commit 60c501e）。GHC transcript を CC と同じ analyzed-dict に落とし `judge()`（層2の5不変条件）を共有。`--platform {auto,cc,ghc}`（auto は先頭イベントで判別）、GHC latest picker、`detect_platform` を追加。**検証済み:** CC A-1 ランは check1/2/4/5 が変更前と同一PASS（回帰なし）／big-bang GHC transcript は正しく FAIL（runSubagent=3 検出、cat経由のWF読込も検出）。その後 CC側 theme 抽出を `/blackpink` 決め打ちから `/(?:bp|blackpink)` に一般化（`/bp` の CC 判定が可能に。`/clear` の空argsは引き続き無視）— commit 51f7ebf。
   - ⚠️ **未確定（クリーン成功ランで較正）:** stage-A GHC で親が S1/S2 の中間OUTを**チャット本文に出すか／端末stdoutに隠すか**。後者だと端末出力は transcript に出ず OUT形マーカーが見えないため check4 が落ちうる。判定器の欠陥でなく観測限界。
-- [~] **step3＝測定（進行中）= 両プラットフォームを `/bp` で。** ★入口の訂正（ユーザー指摘）: 測定は `/blackpink`（スキル直）でなく **`/bp`（エントリ）から**。理由: ①`bp→SKILL移譲` は3層モデルの**配管層**で A の検証対象。`/blackpink` はこの層を飛ばす＝未検証リスクを残す（「単純だから安全」と*測らず*断定は事実ベース違反）。②CC↔GHC を**同一入口**で測らないと「両方で再現」の証拠にならない。③`/bp` は変換成果物 `bp.prompt.md` を初めてテストする。
-  - CC測定進捗（`/bp` 入口、2026-06-02）:
-
-    | WF / theme | transcript | 結果 |
-    |-----------|-----------|------|
-    | optimized `white` r1 | 4f58b8b6 | **PASS**（スモーク・5/5）|
-    | optimized `white` r2 | — | 未測定 |
-    | quick `party` r1/r2 | — | 未測定 |
-    | versus `fierce vs emotional` r1/r2 | — | 未測定 |
-  - GHC: 同じ6本を `/bp` で（未着手）。
-  - GHC: 同じ6本を `/bp` で。**較正用GHCラン1本（16125f49, `/blackpink white`）は不成立（操作的失敗）** — 親が filter-songs.sh を全moodタグでループする複雑な1行（`jq` クォート不正）でハング→セットリスト生成前に終了。verify-run.py は正しく FAIL（ログ0行＝filter未実行、を正しく検出。委譲なし=PASS・ルーティング=PASS）。クリーン成功ランは未取得。**もしこのハングが再現するなら**「GHCの親は filter-songs を脆い1行で呼んで壊す」パターン＝WFの呼び出し文言を1変数だけ調整する候補。
+- [x] **step3-CC 完了＝CC `/bp` 入口 6/6 全PASS**（2026-06-02、上のRESUME表）。★入口の訂正（ユーザー指摘）: 測定は `/blackpink`（スキル直）でなく **`/bp`（エントリ）から**。理由: ①`bp→SKILL移譲` は3層モデルの**配管層**で A の検証対象。`/blackpink` はこの層を飛ばす＝未検証リスクを残す。②CC↔GHC を**同一入口**で測らないと「両方で再現」の証拠にならない。③`/bp` は変換成果物 `bp.prompt.md` を初めてテストする。
+- [ ] **step3-GHC（残）= 同じ6テーマを `/bp` で。** **較正用GHCラン1本（16125f49, `/blackpink white`）は不成立（操作的失敗）** — 親が filter-songs.sh を全moodタグでループする複雑な1行（`jq` クォート不正）でハング→セットリスト生成前に終了。verify-run.py は正しく FAIL（ログ0行＝filter未実行、を正しく検出。委譲なし=PASS・ルーティング=PASS）。クリーン成功ランは未取得。**もしこのハングが再現するなら**「GHCの親は filter-songs を脆い1行で呼んで壊す」パターン＝WFの呼び出し文言を1変数だけ調整する候補。
 - [ ] **step4 = A-3** — CC・GHC とも全PASS → 両方OKを確認し差分を文書化。不合格 → 変換ルール or WF文言を**1変数ずつ**修正し再変換・再測定。
   - 注: `/tmp/bp-filter.log` は共有グローバルの揮発ログ。A-1 の log エントリは本セッションで reset 済み（過去ランの check3 を今再判定すると log 不在で落ちるが、記録時点の 6/6 PASS は有効。log は transcript の一部ではない）。
 
