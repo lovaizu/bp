@@ -36,7 +36,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] **フェーズ2-3完了**（2026-05-29） — GHC側テスト 3シナリオ全PASS（optimized×2・quick・versus）
 - **フェーズ2-4 実施中**（2026-05-29〜） — transcript解析で実行メカニズムを事実検証。①起動②別コンテキスト③スクリプト実行は実証。**④JSON受け渡しは非決定的（設計通りでない）と判明** = 両プラットフォーム共通の核心課題。「100%再現」等の過剰表現は撤回済み
 - **アプローチ転換（2026-05-30）** — ビッグバン検証を中止し、**段階的ビルドアップ**に移行。要素が入り組んで1変数に絞れない／直すと別が壊れる、を解消するため。目的は不変。詳細は「## 新アプローチ」
-- **A-1（CC）実施中（2026-05-30〜）** — SKILL.md + optimized.md を基準1で再構築済み。CCで `/blackpink white` ×2 の測定待ち。再開手順は「## 新アプローチ → 現在の作業状態 ★RESUME」
+- **A-1（CC）完了（2026-06-02）** — SKILL.md + optimized.md を基準1で再構築。`/blackpink white` ×2 を測定し `scripts/verify-run.py` で層2の全5不変条件が **2/2 PASS**。詳細は「## 新アプローチ → A-1 測定結果」。次は quick/versus を同形に作り直し→A-2（GHC自動変換）
 
 
 ## テスト結果サマリ
@@ -314,20 +314,37 @@ planner   : 6 OK / 1 FAIL
 - 各段で verify-run.py（or 手解析）で層2不変条件を検証してから次へ。Aもさらに細かく割ってよい。
 - **旧フェーズ3（マッピング確定・設計書更新）はこのラダー完了後に回収。**
 
+### A-1 測定結果（2026-06-02）★合格
+
+**対象:** `/blackpink white` ×2（fresh CCセッション）。transcript: `07193a74`, `3c853b4d`。
+**判定器:** `scripts/verify-run.py`（新規作成。transcript→層2不変条件をPASS/FAIL）。
+
+| 不変条件 | run1 07193a74 | run2 3c853b4d |
+|---------|---------------|---------------|
+| 1. ルーティング white→optimized | PASS | PASS |
+| 2. Step順 1→2→3（WF Read<filter<S1≤S2≤S3） | PASS | PASS |
+| 3. filter-songs.sh 実行（bash参照＋/tmp/bp-filter.log） | PASS | PASS |
+| 4. OUT形 S1/S2/S3（assistant本文＋tool_result両走査） | PASS | PASS |
+| 5. 委譲なし（Stage A = Task 0） | PASS | PASS |
+
+**所見:**
+- 親は Step1/Step2 を **python one-liner の stdout** でJSON化（チャット本文には出さない）。よって OUT形検出は **tool_result も走査**が必須（verify-run.py はそうしている）。
+- filter-songs.sh は `for tag in ...` ループ内実行のため **Bash tool_use 数 ≠ 実行回数**。実行回数は `/tmp/bp-filter.log` が正。
+- **既知の計器限界:** bp-filter.log は共有グローバル。2ランが同分内のため in-window 切り分けは厳密でない（16/20・20/20）。check成立には影響なし（両run bash参照≥1・ログ≥1）。
+- verify-run.py 初版の Step順チェックは assistant全文→tool_result全文の順で連結し位置が時系列とズレるバグ→**真の file 順で連結するよう修正済み**。
+
 ### 現在の作業状態（次セッションはここから）★RESUME
 
-**A-1（CC）実施中。** 再構築済みファイル（基準1・best-practice準拠）:
-- `.claude/skills/blackpink/SKILL.md` — ルーティングのみに作り直し（概要/ペルソナ/「Read and follow」を排除）
-- `.claude/skills/blackpink/workflows/optimized.md` — A版（サブエージェント無し・親が各Stepを実行、番号手順＋明示IN/OUT）
+**A-1（CC）合格。次は A-2 の前段：quick/versus を A版（optimized.md と同形）に作り直す。**
 
-**まだ旧スタイル（big-bang期、未改修）:**
-- `.claude/skills/blackpink/workflows/quick.md` / `versus.md`（subagent委譲＋「Critical: isolation」preamble付き）
-- `.github/` 配下すべて（旧optimized等を再生成したもの）。**A-1合格後の A-2 で再変換する**まで触らない。
+**現状ファイル:**
+- ✅ `.claude/skills/blackpink/SKILL.md` — ルーティングのみ（基準1準拠・A-1で検証済み）
+- ✅ `.claude/skills/blackpink/workflows/optimized.md` — A版・検証済み
+- ✅ `scripts/verify-run.py` — 層2判定器（Stage A・CC対応。GHCのrunSubagent/content.json対応は B/A-2 で拡張）
+- ⏳ `.claude/skills/blackpink/workflows/quick.md` / `versus.md` — **まだ旧スタイル**（subagent委譲＋「Critical: isolation」preamble）。**optimized.md と同じA版に作り直す**のが次の作業
+- 🔒 `.github/` 配下すべて — 旧再生成物。**A-2（GHC自動変換）まで触らない**
 
-**次セッションの最初の一手:** ユーザーが新規CCセッションで `/blackpink white` を2回実行した transcript（`~/.claude/projects/-Users-kiyo-work-lovaizu-bp/<session>.jsonl`、mtimeで最新2本）を解析し、層2の合否を判定:
-1. "white" → optimized にルーティング 2. Step1→2→3 順守 3. filter-songs.sh 実行（`/tmp/bp-filter.log`併用）4. 各Step OUT形が出る。**選曲一致は見ない（層3判断）**。
-- 合格 → quick/versus も同形に作り直し → A-2（GHC自動変換）→ A-3。
-- 不合格 → optimized.md を基準1の範囲で改善し再測定（1変数ずつ）。
+**次の一手:** quick.md / versus.md を A版（サブエージェント無し・親が各Stepを番号手順で実行・明示IN/OUT・基準1）に再構築 → CCで該当テーマを各2回測定 → `verify-run.py` で層2合否判定（quick/versus のルーティング分岐は route_for_theme に実装済み）。合格後 A-2（`scripts/convert-cc-to-ghc.py` でGHC再生成）。
 
 **観測手順の詳細は本セクション「観測・検証方法」を参照。検証は貼り付けでなく transcript を読む。**
 
