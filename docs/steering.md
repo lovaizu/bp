@@ -335,16 +335,21 @@ planner   : 6 OK / 1 FAIL
 
 ### 現在の作業状態（次セッションはここから）★RESUME
 
-**A-1（CC）合格。次は A-2 の前段：quick/versus を A版（optimized.md と同形）に作り直す。**
+**A-1（CC optimized）合格。quick/versus を A版に作り直し済み（2026-06-02, commit c58603a）。次は quick/versus の CC測定。**
 
 **現状ファイル:**
 - ✅ `.claude/skills/blackpink/SKILL.md` — ルーティングのみ（基準1準拠・A-1で検証済み）
-- ✅ `.claude/skills/blackpink/workflows/optimized.md` — A版・検証済み
-- ✅ `scripts/verify-run.py` — 層2判定器（Stage A・CC対応。GHCのrunSubagent/content.json対応は B/A-2 で拡張）
-- ⏳ `.claude/skills/blackpink/workflows/quick.md` / `versus.md` — **まだ旧スタイル**（subagent委譲＋「Critical: isolation」preamble）。**optimized.md と同じA版に作り直す**のが次の作業
+- ✅ `.claude/skills/blackpink/workflows/optimized.md` — A版・検証済み（5/5 PASS ×2）
+- ✅ `.claude/skills/blackpink/workflows/quick.md` — **A版に作り直し済み**（find→show-plan の2ステップ・最大8曲）。**CC測定待ち**
+- ✅ `.claude/skills/blackpink/workflows/versus.md` — **A版に作り直し済み**（findA+findB→compare→show-plans の4ステップ）。**CC測定待ち**
+- ✅ `scripts/verify-run.py` — 層2判定器（**WFごとプロファイル対応**: optimized=S1/S2/S3, quick=S1/S3, versus=S1/S2/S3 with flow_score+recommended）。GHCのrunSubagent/content.json対応は B/A-2 で拡張
 - 🔒 `.github/` 配下すべて — 旧再生成物。**A-2（GHC自動変換）まで触らない**
 
-**次の一手:** quick.md / versus.md を A版（サブエージェント無し・親が各Stepを番号手順で実行・明示IN/OUT・基準1）に再構築 → CCで該当テーマを各2回測定 → `verify-run.py` で層2合否判定（quick/versus のルーティング分岐は route_for_theme に実装済み）。合格後 A-2（`scripts/convert-cc-to-ghc.py` でGHC再生成）。
+**次の一手:** fresh CCセッションで測定（各2回）→ `python3 scripts/verify-run.py --latest 4` で判定。
+- quick: `/blackpink quick party setlist` ×2
+- versus: `/blackpink fierce vs emotional` ×2
+- ログ初期化: `: > /tmp/bp-filter.log`
+- 全PASS → A-2（`scripts/convert-cc-to-ghc.py` でGHC再生成）。不合格 → 該当WFを基準1の範囲で1変数ずつ改善し再測定。
 
 **観測手順の詳細は本セクション「観測・検証方法」を参照。検証は貼り付けでなく transcript を読む。**
 
