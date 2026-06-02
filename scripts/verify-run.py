@@ -1,28 +1,44 @@
 #!/usr/bin/env python3
 """verify-run.py — Layer-2 invariant checker for the bp setlist planner.
 
-Reads a Claude Code (CC) transcript .jsonl and judges PASS/FAIL on the
-layer-2 (plumbing) invariants defined in docs/steering.md. Layer-3 content
-(which songs were picked, the prose quality) is intentionally NOT judged.
+Reads a Claude Code (CC) **or** GitHub Copilot (GHC) transcript .jsonl and
+judges PASS/FAIL on the layer-2 (plumbing) invariants defined in
+docs/steering.md. Layer-3 content (which songs were picked, the prose
+quality) is intentionally NOT judged.
 
 Stage covered: A (no subagents — the parent executes every WF step itself).
 
-What it checks per run:
+What it checks per run (same five invariants on both platforms):
   1. Routing      — the theme routed to the expected workflow file
                     (SKILL.md rules: quick / versus / else→optimized).
-  2. Step order   — optimized.md was Read, then filter-songs.sh ran (Step 1),
-                    then Step 2 OUT, then Step 3 OUT — in that order.
-  3. filter-songs — the script actually executed (transcript Bash + the
-                    /tmp/bp-filter.log instrument, time-windowed to the run).
-  4. OUT shapes   — Step 1 / Step 2 / Step 3 OUT field vocab is present
-                    (searched across assistant text AND tool_result stdout,
-                    because the parent emits Step1/2 JSON via python stdout).
-  5. No delegation— Stage A expects zero Task (subagent) calls.
+  2. Step order   — the workflow was opened, then filter-songs.sh ran
+                    (Step 1), then Step 2 OUT, then Step 3 OUT — in order.
+  3. filter-songs — the script actually executed (transcript shell call +
+                    the /tmp/bp-filter.log instrument, windowed to the run).
+  4. OUT shapes   — Step 1 / Step 2 / Step 3 OUT field vocab is present.
+  5. No delegation— Stage A expects zero subagent calls
+                    (CC: Task tool_use; GHC: runSubagent).
+
+Platform differences (both reduce to the same analyzed-dict, so judge()
+is shared). See docs/steering.md "GHC transcript 形式" for the facts:
+  - CC transcript: ~/.claude/projects/<proj>/<session>.jsonl. Events are
+    assistant/user messages with content blocks; tool_use carries the name
+    and input; tool_result carries stdout (so OUT markers are findable in
+    tool output). The /blackpink command + args are in a text block.
+  - GHC transcript: <workspaceStorage>/<ws>/GitHub.copilot-chat/transcripts
+    /<session>.jsonl. One event per line {type,data,...}. Reads may go
+    through `cat` in run_in_terminal, not only read_file. tool.execution_
+    complete carries NO output (success only) — so terminal stdout is NOT
+    in the transcript; OUT markers are searched in assistant.message text
+    only, and filter-songs evidence leans on /tmp/bp-filter.log. The
+    parent's original /blackpink command is NOT logged, so --theme is
+    REQUIRED in GHC mode.
 
 Usage:
-  scripts/verify-run.py <transcript.jsonl> [<transcript.jsonl> ...]
+  scripts/verify-run.py <transcript.jsonl> [...]              # auto-detect
   scripts/verify-run.py --theme white run1.jsonl run2.jsonl
-  scripts/verify-run.py --latest 2          # auto-pick newest /blackpink runs
+  scripts/verify-run.py --latest 2          # CC: newest /blackpink runs
+  scripts/verify-run.py --platform ghc --theme white <ghc.jsonl>
 """
 
 import argparse
@@ -187,6 +203,127 @@ def analyze(path):
     }
 
 
+# ---------------------------------------------------------------------------
+# GHC (GitHub Copilot) transcript support.
+#
+# A GHC transcript is one JSON event per line: {type, data, id, timestamp,
+# parentId}. We reduce it to the SAME analyzed dict that CC's analyze()
+# returns, so judge() is shared. Field mapping (confirmed against 6 real
+# logs, see steering "GHC transcript 形式"):
+#   read_file(filePath)              -> a file Read
+#   run_in_terminal(command)         -> a shell call (the parent often
+#                                       `cat`s SKILL/workflow files here,
+#                                       and runs filter-songs.sh here)
+#   runSubagent                      -> delegation (the no-delegation marker)
+#   assistant.message.content/reason -> the only reliable OUT-marker text
+#                                       (tool stdout is NOT in the transcript)
+# ---------------------------------------------------------------------------
+
+GHC_TRANSCRIPT_GLOB = os.path.expanduser(
+    "~/Library/Application Support/Code/User/workspaceStorage/"
+    "*/GitHub.copilot-chat/transcripts"
+)
+_WF_IN_PATH = re.compile(r"workflows/([\w.-]+\.md)")
+
+
+def detect_platform(path):
+    """Sniff CC vs GHC from the first parseable line. GHC lines carry a
+    top-level 'type' of session.start / *.message / tool.execution_*."""
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        t = o.get("type", "")
+        if t.startswith(("session.", "tool.", "assistant.", "user.")) and "data" in o:
+            return "ghc"
+        return "cc"
+    return "cc"
+
+
+def load_events_ghc(path):
+    """Yield (idx, ts, etype, data) for each GHC event, in file order."""
+    idx = 0
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        yield idx, parse_ts(o.get("timestamp")), o.get("type"), o.get("data", {}) or {}
+        idx += 1
+
+
+def analyze_ghc(path):
+    """GHC analyzer — returns the same dict shape as CC analyze().
+
+    cmd_args is always None for GHC (the /blackpink command is not logged),
+    so the caller MUST pass --theme.
+    """
+    read_wf = None
+    read_wf_idx = None
+    first_filter_idx = None
+    filter_cmd_count = 0
+    subagent_calls = 0
+    chunks = []        # (idx, lowered_text) — assistant narration only
+    run_ts = []
+
+    def note_wf(name, idx):
+        nonlocal read_wf, read_wf_idx
+        if read_wf is None:
+            read_wf, read_wf_idx = name, idx
+
+    for idx, ts, etype, d in load_events_ghc(path):
+        if ts:
+            run_ts.append(ts)
+
+        if etype == "assistant.message":
+            txt = (d.get("content") or "") + "\n" + (d.get("reasoningText") or "")
+            chunks.append((idx, txt.lower()))
+
+        elif etype == "tool.execution_start":
+            tn = d.get("toolName")
+            args = d.get("arguments", {}) or {}
+            if tn == "read_file":
+                fp = args.get("filePath", "") or ""
+                m = _WF_IN_PATH.search(fp)
+                if m:
+                    note_wf(m.group(1), idx)
+            elif tn == "run_in_terminal":
+                cmd = args.get("command", "") or ""
+                # The parent may `cat` the workflow file to read it.
+                m = _WF_IN_PATH.search(cmd)
+                if m:
+                    note_wf(m.group(1), idx)
+                n = cmd.count("filter-songs.sh")
+                if n:
+                    filter_cmd_count += n
+                    if first_filter_idx is None:
+                        first_filter_idx = idx
+            elif tn == "runSubagent":
+                subagent_calls += 1
+
+    chunks.sort(key=lambda c: c[0])
+    searchable = "\n".join(t for _, t in chunks)
+
+    return {
+        "path": path,
+        "cmd_args": None,                 # not present in GHC transcripts
+        "read_wf": read_wf,
+        "read_wf_idx": read_wf_idx,
+        "first_filter_idx": first_filter_idx,
+        "filter_cmd_count": filter_cmd_count,
+        "task_calls": subagent_calls,     # runSubagent == CC's Task
+        "searchable": searchable,
+        "ts_window": (min(run_ts), max(run_ts)) if run_ts else (None, None),
+    }
+
+
 def count_filter_log(window):
     """Count /tmp/bp-filter.log lines inside the run's time window."""
     if not os.path.exists(FILTER_LOG):
@@ -296,18 +433,36 @@ def pick_latest(n):
     return picked
 
 
+def pick_latest_ghc(n):
+    """Newest N GHC transcripts across all VS Code workspaces. GHC logs no
+    /blackpink marker, so we cannot filter by command — just take newest."""
+    files = []
+    for d in glob.glob(GHC_TRANSCRIPT_GLOB):
+        files += glob.glob(os.path.join(d, "*.jsonl"))
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files[:n]
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Layer-2 invariant checker (Stage A, CC).")
+    ap = argparse.ArgumentParser(description="Layer-2 invariant checker (Stage A, CC/GHC).")
     ap.add_argument("transcripts", nargs="*", help="transcript .jsonl paths")
     ap.add_argument("--theme", default=None,
-                    help="override theme for routing check (default: from /blackpink args)")
+                    help="theme for routing check (CC: defaults to /blackpink "
+                         "args; GHC: REQUIRED, the command is not logged)")
+    ap.add_argument("--platform", choices=["auto", "cc", "ghc"], default="auto",
+                    help="transcript platform (default: auto-detect per file)")
     ap.add_argument("--latest", type=int, default=0,
-                    help="auto-pick the N newest /blackpink transcripts for the project")
+                    help="auto-pick the N newest transcripts (CC: newest "
+                         "/blackpink runs; GHC: newest transcripts, needs "
+                         "--platform ghc)")
     args = ap.parse_args()
 
     paths = list(args.transcripts)
     if args.latest:
-        paths = pick_latest(args.latest) + paths
+        if args.platform == "ghc":
+            paths = pick_latest_ghc(args.latest) + paths
+        else:
+            paths = pick_latest(args.latest) + paths
     if not paths:
         ap.error("no transcripts given (pass paths or --latest N)")
 
@@ -317,12 +472,21 @@ def main():
             print(f"!! not found: {p}")
             all_pass = False
             continue
-        a = analyze(p)
+        platform = args.platform if args.platform != "auto" else detect_platform(p)
+        if platform == "ghc":
+            if args.theme is None:
+                print(f"!! GHC transcript needs --theme (command not logged): {p}")
+                all_pass = False
+                continue
+            a = analyze_ghc(p)
+        else:
+            a = analyze(p)
         checks = judge(a, theme_override=args.theme)
         run_pass = all(ok for _, ok, _ in checks)
         all_pass = all_pass and run_pass
+        shown_theme = a["cmd_args"] if a["cmd_args"] is not None else args.theme
         print("=" * 72)
-        print(f"RUN: {os.path.basename(p)}   theme={a['cmd_args']!r}   "
+        print(f"RUN: {os.path.basename(p)}   [{platform}]   theme={shown_theme!r}   "
               f"=> {'PASS' if run_pass else 'FAIL'}")
         print("-" * 72)
         for name, ok, note in checks:
