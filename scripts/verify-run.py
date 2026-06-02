@@ -38,13 +38,24 @@ PROJECT_TRANSCRIPT_DIR = os.path.expanduser(
 )
 FILTER_LOG = "/tmp/bp-filter.log"
 
-# OUT-shape field vocab from workflows/optimized.md. We require a distinctive
-# subset of each step's fields (not every field) to call the shape "present".
-STEP1_FIELDS = ["id", "title", "bpm", "energy", "mood", "duration_sec",
-                "members_featured", "has_dance_break", "suitable_for"]
-STEP1_DISTINCTIVE = ["has_dance_break", "duration_sec", "members_featured", "suitable_for"]
-STEP2_DISTINCTIVE = ["position", "total_duration_sec"]
-STEP3_DISTINCTIVE = ["stage", "lighting", "choreo"]  # stage_layout / lighting / choreography_highlight
+# OUT-shape field vocab per workflow step. We require a distinctive subset of
+# each step's fields (not every field) to call the shape "present". The marker
+# set is keyed; a step in a profile names its marker key + how many must appear.
+MARKERS = {
+    "S1": ["has_dance_break", "duration_sec", "members_featured", "suitable_for"],
+    "S2_optimized": ["position", "total_duration_sec"],   # ordered-list OUT
+    "S2_versus": ["flow_score", "recommended"],            # comparative OUT
+    "S3": ["stage", "lighting", "choreo"],                 # stage_layout/lighting/choreography_highlight
+}
+
+# Per-workflow invariant profile for Stage A (no subagents). Each entry is a
+# step: (label, marker_key, min_present). Steps are listed in required order;
+# the order check enforces their OUT positions are non-decreasing.
+PROFILES = {
+    "optimized.md": [("S1", "S1", 3), ("S2", "S2_optimized", 2), ("S3", "S3", 3)],
+    "quick.md":     [("S1", "S1", 3), ("S3", "S3", 3)],
+    "versus.md":    [("S1", "S1", 3), ("S2", "S2_versus", 2), ("S3", "S3", 3)],
+}
 
 
 def route_for_theme(theme):
@@ -119,7 +130,6 @@ def analyze(path):
     filter_cmd_count = 0     # literal occurrences in Bash commands
     task_calls = 0
     chunks = []  # (idx, lowered_text) in true file order — used for ordering scan
-    step1_idx = step2_idx = step3_idx = None
     run_ts = []
 
     for idx, ts, role, b in load_events(path):
@@ -162,20 +172,6 @@ def analyze(path):
     chunks.sort(key=lambda c: c[0])
     searchable = "\n".join(t for _, t in chunks)
 
-    # Step OUT presence + first-occurrence ordering. We locate each step by its
-    # distinctive vocab across the combined blob (positional scan).
-    def first_pos(tokens, blob):
-        positions = [blob.find(t.lower()) for t in tokens]
-        positions = [p for p in positions if p >= 0]
-        return min(positions) if positions else None
-
-    s1_present = sum(t.lower() in searchable for t in STEP1_DISTINCTIVE) >= 3
-    s2_present = all(t.lower() in searchable for t in STEP2_DISTINCTIVE)
-    s3_present = all(t.lower() in searchable for t in STEP3_DISTINCTIVE)
-    step1_idx = first_pos(STEP1_DISTINCTIVE, searchable)
-    step2_idx = first_pos(STEP2_DISTINCTIVE, searchable)
-    step3_idx = first_pos(STEP3_DISTINCTIVE, searchable)
-
     return {
         "path": path,
         "cmd_args": cmd_args,
@@ -184,10 +180,7 @@ def analyze(path):
         "first_filter_idx": first_filter_idx,
         "filter_cmd_count": filter_cmd_count,
         "task_calls": task_calls,
-        "s1_present": s1_present,
-        "s2_present": s2_present,
-        "s3_present": s3_present,
-        "step_text_pos": (step1_idx, step2_idx, step3_idx),
+        "searchable": searchable,
         "ts_window": (min(run_ts), max(run_ts)) if run_ts else (None, None),
     }
 
@@ -210,9 +203,21 @@ def count_filter_log(window):
     return inwin, total
 
 
+def step_presence(blob, marker_key, min_present):
+    """(present_bool, first_char_pos_or_None) for a step's markers in blob."""
+    toks = MARKERS[marker_key]
+    hits = [blob.find(t.lower()) for t in toks]
+    present_count = sum(1 for p in hits if p >= 0)
+    positions = [p for p in hits if p >= 0]
+    pos = min(positions) if positions else None
+    return present_count >= min_present, pos
+
+
 def judge(a, theme_override=None):
     theme = theme_override if theme_override is not None else a["cmd_args"]
     expected_wf = route_for_theme(theme)
+    profile = PROFILES.get(expected_wf, PROFILES["optimized.md"])
+    blob = a["searchable"]
     checks = []
 
     # 1. Routing
@@ -221,8 +226,13 @@ def judge(a, theme_override=None):
                    routing_ok,
                    f"theme={theme!r} → expected {expected_wf}, read {a['read_wf']}"))
 
-    # 2. Step order: WF read < filter(step1) < step2 < step3
-    p1, p2, p3 = a["step_text_pos"]
+    # Resolve each profile step's presence + OUT position once (used by 2 & 4).
+    step_results = []  # (label, present, pos, min_present, marker_key)
+    for label, mkey, minp in profile:
+        present, pos = step_presence(blob, mkey, minp)
+        step_results.append((label, present, pos, minp, mkey))
+
+    # 2. Step order: WF read < first filter, then step OUT positions non-decreasing.
     order_parts = []
     order_ok = True
     if a["read_wf_idx"] is None or a["first_filter_idx"] is None:
@@ -232,14 +242,17 @@ def judge(a, theme_override=None):
         if not (a["read_wf_idx"] < a["first_filter_idx"]):
             order_ok = False
         order_parts.append(f"read@{a['read_wf_idx']} < filter@{a['first_filter_idx']}")
-    if None in (p1, p2, p3):
+    positions = [pos for _, _, pos, _, _ in step_results]
+    if any(p is None for p in positions):
         order_ok = False
         order_parts.append("a step OUT not found")
     else:
-        if not (p1 <= p2 <= p3):
+        if not all(positions[i] <= positions[i + 1] for i in range(len(positions) - 1)):
             order_ok = False
-        order_parts.append(f"S1@{p1} ≤ S2@{p2} ≤ S3@{p3}")
-    checks.append(("2. Step order 1→2→3", order_ok, "; ".join(order_parts)))
+        order_parts.append(" ≤ ".join(f"{lab}@{pos}"
+                                      for lab, _, pos, _, _ in step_results))
+    labels = "→".join(lab for lab, *_ in step_results)
+    checks.append((f"2. Step order {labels}", order_ok, "; ".join(order_parts)))
 
     # 3. filter-songs.sh executed
     inwin, total = count_filter_log(a["ts_window"])
@@ -250,11 +263,11 @@ def judge(a, theme_override=None):
                    filter_ok,
                    f"bash refs={a['filter_cmd_count']}; {log_note}"))
 
-    # 4. OUT shapes
-    out_ok = a["s1_present"] and a["s2_present"] and a["s3_present"]
-    checks.append(("4. OUT shapes S1/S2/S3",
-                   out_ok,
-                   f"S1={a['s1_present']} S2={a['s2_present']} S3={a['s3_present']}"))
+    # 4. OUT shapes (per workflow profile)
+    out_ok = all(present for _, present, _, _, _ in step_results)
+    detail = " ".join(f"{lab}({mkey})={present}"
+                      for lab, present, _, _, mkey in step_results)
+    checks.append((f"4. OUT shapes ({labels})", out_ok, detail))
 
     # 5. No subagent delegation (Stage A)
     deleg_ok = a["task_calls"] == 0
