@@ -308,7 +308,7 @@ planner   : 6 OK / 1 FAIL
 
 **段階的タスクラダー:**
 - [ ] **A. サブエージェント無し・メインのみで配管を再現性高く**（WFは後のサブ化を見越しファイル分割）
-  - [x] A-1 CC OK（3WF×2=6/6 PASS, 2026-06-02） / [ ] A-2 GHC自動変換OK / [ ] A-3 CC/GHC両方OK
+  - [x] A-1 CC OK（3WF×2=6/6 PASS, 2026-06-02。`/blackpink`＋`/bp` 両入口） / [~] A-2 GHC（初回6本はモデル交絡で無効＝同等モデルで測り直し要） / [ ] A-3 CC/GHC両方OK
 - [ ] **B. 1ステップずつサブエージェント化、各段で再現性確認**
   - [ ] B-1(1WF): CC→GHC自動変換→CC/GHC … [ ] B-2(2WF) … と積み上げ
 - 各段で verify-run.py（or 手解析）で層2不変条件を検証してから次へ。Aもさらに細かく割ってよい。
@@ -359,7 +359,10 @@ quick.md / versus.md を optimized.md と同形のA版に再構築（commit c586
 2. **【モデル交絡＝測定無効】CC=Opus 4.8（最上位）vs GHC=GPT mini/Haikuレベル（小型・ユーザー証言）**。bp.prompt.md/SKILL/WF/CC側いずれも `model:` 無指定＝各プラットフォームのデフォルトに従う。GHCで観測した非決定性（WF読まない2/6・filter-songs.sh実行1/6・JSON/markdown混在）は**小型モデルの指示追従不足が主因の可能性が高く、プラットフォーム差と分離不能**。→ **「GHC stage-Aは非決定的」という整理は撤回**。同等性能モデルで測り直すまで CC/GHC 差は語れない。
 3. **判定器バグ修正済み（commit済）:** verify-run.py GHCモードが `tool.execution_start` のみ走査し `assistant.message.toolRequests` を見落としていた（最終ターンのツールを取りこぼす）。両ソース走査＋toolCallId dedupe に修正。CC回帰なし。ただし上記1により、最終OUT生成ターン自体が transcript に無いため check4 は原理的に観測限界が残る。
 
-**★NEXT ACTION（次セッション）★最優先:** **GHCで同等モデルに揃えて6本を測り直す。** ①VS Codeのモデルピッカーで利用可能な最上位（CCのOpus 4.8に最も近いもの。Claude Sonnet系など）を選ぶ、または bp.prompt.md/CC側に同一 `model:` を明示指定（要：両プラットフォームでの利用可否確認）。②揃えた条件で `/bp` 6本をコールド測定。③GHCは**画面出力も保存**（transcriptは最終OUTを欠くため）。判定は transcript（読込・filter・委譲）＋画面（最終OUT形）の併用。
+**★NEXT ACTION（次セッション）★最優先:** **GHCで同等モデルに揃えて6本を測り直す。**
+- ⚠️ **未解決ブロッカー（まずユーザーに確認）:** GHCのモデルピッカーで選べる上位モデル（**Opus 4.x が選べるか／Sonnet止まりか**）。回答で揃え先を決定 → ①GHCでOpus可なら両方Opus（CC既存6本流用・GHC6本だけ測り直し）／②Sonnet止まりなら「CC=Opus・GHC=Sonnet で妥協」か「両方Sonnet＝CCも再測定」。初回GHCは GPT mini/Haikuレベルだった（ユーザー証言）。
+- 揃え先決定後: ① bp.prompt.md（＋必要ならCC側）に `model:` を明示指定して固定する案も検討（再現性向上。現状は全ファイル無指定）。②揃えた条件で `/bp` 6本をコールド測定（ログはリセットしない）。③GHCは**画面出力も保存**（transcriptは最終OUTを欠くため）。判定は transcript（読込・filter・委譲）＋画面（最終OUT形）の併用。
+- 初回GHC6本の transcript（参考、モデル交絡で無効）: white=faa876c2/ffd6c9b5, quick=51df7012/eaee76be, versus=8469e7e2/bea91dd7。
 - 旧NEXT ACTION（無印モデルでのGHC測定）は↑の交絡判明で無効化。
 
 **★CC `/bp` 入口 6/6 全PASS（2026-06-02）:** 6本すべて verify-run.py 5/5 PASS。**`/bp` 入口でも3WFの層2が決定的に再現**＝A-1（`/blackpink` 入口）と同結果がエントリ込みで確認。**`bp→SKILL移譲`（配管層）も有効。**
