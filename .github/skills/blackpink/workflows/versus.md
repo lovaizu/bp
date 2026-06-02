@@ -1,86 +1,28 @@
-# Workflow: Versus Setlist
+Do the steps in order. Each step's OUT is the next step's IN.
+The user gives two themes (e.g. "fierce vs emotional"). If only one theme is present, ask for the second before starting.
 
-Compare two themes by running song search twice, merging results,
-evaluating them together, then producing a comparative show plan.
+## Step 1A — Find songs for theme A
+IN: the first theme.
+1. For each mood tag that fits theme A, run:
+   `bash .github/skills/blackpink/resources/filter-songs.sh .github/skills/blackpink/resources/songs.json mood <tag>`
+2. Keep up to 10 songs from the combined results.
+OUT: result_a — a JSON array of the kept songs, each with: id, title, bpm, energy, mood, duration_sec, members_featured, has_dance_break, suitable_for.
 
-Flow: bp-song-finder(A) + bp-song-finder(B) → bp-setlist-evaluator → bp-show-planner
+## Step 1B — Find songs for theme B
+IN: the second theme.
+1. For each mood tag that fits theme B, run:
+   `bash .github/skills/blackpink/resources/filter-songs.sh .github/skills/blackpink/resources/songs.json mood <tag>`
+2. Keep up to 10 songs from the combined results.
+OUT: result_b — same JSON shape as result_a.
 
-## Critical: subagent context isolation
+## Step 2 — Compare the two themes
+IN: result_a; result_b; `.github/skills/blackpink/resources/members.json`.
+1. For each theme, keep 8–10 songs and put them in performance order: opener, rising peaks, one cooldown, finale.
+2. Give each theme a flow score (energy flow, mood transitions, solo balance, dance break spacing).
+3. The recommended theme is the one with the higher flow score.
+OUT: a JSON object with theme_a and theme_b — each an ordered array (position, id, title, energy, bpm, note) plus flow_score and total_duration_sec — and recommended (the theme name with the higher score).
 
-Each subagent runs in an ISOLATED context. It can see ONLY the text you place in its
-request — not the user's chat, not prior steps, not any earlier subagent's output.
-So whenever a step says to pass a prior result (result_a, result_b, the evaluator's
-output, etc.), you MUST paste that result's COMPLETE, VERBATIM JSON into the request.
-Do not summarize, paraphrase, reference it indirectly, or omit it: the subagent cannot
-recover it on its own and will re-derive (wrong) data.
-
-The user will provide two themes (e.g., "fierce vs emotional").
-Parse the two themes from the user's input. If only one theme is found, ask the user
-to provide a second theme before proceeding.
-
-## Step 1A: Song Search for Theme A
-
-Delegate to the bp-song-finder subagent with the following instructions.
-
-Request:
-- Theme: (first theme)
-- songs.json path: .github/skills/blackpink/resources/songs.json
-- filter-songs.sh path: .github/skills/blackpink/resources/filter-songs.sh
-- Max songs to return: 10
-
-Keep the full JSON result as `result_a`.
-
-If the result contains `"status": "error"`, show the error to the user and stop.
-
-## Step 1B: Song Search for Theme B
-
-Delegate to the bp-song-finder subagent with the following instructions.
-
-Request:
-- Theme: (second theme)
-- songs.json path: .github/skills/blackpink/resources/songs.json
-- filter-songs.sh path: .github/skills/blackpink/resources/filter-songs.sh
-- Max songs to return: 10
-
-Keep the full JSON result as `result_b`.
-
-If the result contains `"status": "error"`, show the error to the user and stop.
-
-## Step 2: Comparative Evaluation
-
-Delegate to the bp-setlist-evaluator subagent with the following instructions.
-
-Request:
-- Song search results: provide BOTH result_a and result_b by pasting their complete verbatim JSON (full objects, not summaries or references):
-  - theme_a: { name: "(first theme)", search_result: (paste the complete verbatim result_a JSON here) }
-  - theme_b: { name: "(second theme)", search_result: (paste the complete verbatim result_b JSON here) }
-- members.json path: .github/skills/blackpink/resources/members.json
-- Target setlist length: 8-10 songs per theme
-- Evaluation criteria: energy flow, mood transitions, solo balance, dance break spacing
-- Mode: comparative (evaluate both and recommend which theme produces the better setlist)
-
-Do not modify the subagent's result. Keep the full JSON as-is for the next step.
-
-If the result contains `"status": "error"`, show the error to the user and stop.
-
-## Step 3: Show Plan Generation
-
-Delegate to the bp-show-planner subagent with the following instructions.
-
-Request:
-- Theme: provide both theme names and indicate which was recommended by the evaluator
-- Evaluated setlist: PASTE the complete verbatim JSON returned by Step 2 here (the full object containing both plans, not a summary or a reference)
-- members.json path: .github/skills/blackpink/resources/members.json
-- Optimization level: full
-- Mode: comparative (generate plans for both and highlight differences)
-
-Do not modify the subagent's result. Keep the full JSON as-is.
-
-If the result contains `"status": "error"`, show the error to the user and stop.
-
-## Step 4: Present to User
-
-Format both show plans side by side for comparison.
-Include: which theme the evaluator recommended and why,
-song order for each, energy curves, total durations, and key differences.
-Let the user choose which plan to go with.
+## Step 3 — Write the show plans
+IN: Step 2 OUT; `.github/skills/blackpink/resources/members.json`.
+1. For each song in both themes, add: stage_layout, lighting, one choreography_highlight.
+OUT: the final comparison for the user — both ordered setlists with the Step 3 details, each total duration, the recommended theme, and the key differences between them.

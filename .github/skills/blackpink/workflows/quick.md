@@ -1,47 +1,14 @@
-# Workflow: Quick Setlist
+Do the steps in order. Each step's OUT is the next step's IN.
 
-Fast setlist generation. Search songs, then directly generate a show plan.
-Skips the evaluation/optimization step.
+## Step 1 — Find songs
+IN: the user's theme.
+1. For each mood tag that fits the theme, run:
+   `bash .github/skills/blackpink/resources/filter-songs.sh .github/skills/blackpink/resources/songs.json mood <tag>`
+2. Keep up to 8 songs from the combined results.
+OUT: a JSON array of the kept songs, each with: id, title, bpm, energy, mood, duration_sec, members_featured, has_dance_break, suitable_for.
 
-Flow: bp-song-finder → bp-show-planner
-
-## Critical: subagent context isolation
-
-Each subagent runs in an ISOLATED context. It can see ONLY the text you place in its
-request — not the user's chat, not prior steps, not any earlier subagent's output.
-So whenever a step says to pass a prior result, you MUST paste that result's COMPLETE,
-VERBATIM JSON into the request. Do not summarize, paraphrase, reference it indirectly,
-or omit it: the subagent cannot recover it on its own and will re-derive (wrong) data.
-
-## Step 1: Song Search
-
-Delegate to the bp-song-finder subagent with the following instructions.
-
-Request:
-- Theme: (the user's theme)
-- songs.json path: .github/skills/blackpink/resources/songs.json
-- filter-songs.sh path: .github/skills/blackpink/resources/filter-songs.sh
-- Max songs to return: 8
-
-Do not modify the subagent's result. Keep the full JSON as-is for the next step.
-
-If the result contains `"status": "error"`, show the error to the user and stop.
-
-## Step 2: Show Plan Generation
-
-Delegate to the bp-show-planner subagent with the following instructions.
-
-Request:
-- Theme: (the user's theme)
-- Song data: PASTE the complete verbatim JSON returned by Step 1 here (the full object, not a summary or a reference)
-- members.json path: .github/skills/blackpink/resources/members.json
-- Optimization level: basic
-
-Do not modify the subagent's result. Keep the full JSON as-is.
-
-If the result contains `"status": "error"`, show the error to the user and stop.
-
-## Step 3: Present to User
-
-Format the show plan from Step 2 into a readable setlist for the user.
-Include: song order, estimated duration, and stage notes.
+## Step 2 — Write the show plan
+IN: Step 1 OUT; `.github/skills/blackpink/resources/members.json`.
+1. Put the songs in performance order: opener, rising peaks, finale.
+2. For each song, add: stage_layout, lighting, one choreography_highlight.
+OUT: the final setlist for the user — ordered songs with the Step 2 details, plus total duration.

@@ -352,22 +352,24 @@ quick.md / versus.md を optimized.md と同形のA版に再構築（commit c586
 
 ### 現在の作業状態（次セッションはここから）★RESUME
 
-**A-1（CC）完了＝3WF×2ラン 6/6 全PASS（2026-06-02）。次は A-2: CC側A版を `scripts/convert-cc-to-ghc.py` でGHCへ自動変換し、GHCで同じ層2を再現させる。**
+**A-1（CC）完了＝3WF×2ラン 6/6 全PASS（2026-06-02）。A-2 進行中: CC側A版をGHCへ自動変換し、GHCで同じ層2を再現させる。**
 
-**現状ファイル（CC側A版＝検証済み・確定）:**
-- ✅ `.claude/skills/blackpink/SKILL.md` — ルーティングのみ
-- ✅ `.claude/skills/blackpink/workflows/optimized.md` — A版（3ステップ）
-- ✅ `.claude/skills/blackpink/workflows/quick.md` — A版（2ステップ・最大8曲）
-- ✅ `.claude/skills/blackpink/workflows/versus.md` — A版（4ステップ）
-- ✅ `scripts/verify-run.py` — 層2判定器（WFごとプロファイル。**現状CC transcript専用**。GHCは runSubagent 窓/ content.json 形式なので A-2 で GHC モードを追加する必要あり）
-- 🔒 `.github/` 配下すべて — **旧 big-bang 期の再生成物（subagent版）。A-2 で上書き再生成する**
+**A-2 進捗:**
+- [x] **step1 完了（2026-06-02）** — 旧 big-bang 期のサブエージェント定義3つを**両プラットフォームから削除**（ユーザー承認＝選択肢1）。`.claude/agents/bp-*.md`（3）と `.github/agents/bp-*.agent.md`（3）を `git rm`。理由: A版はサブエージェント無し（不変条件5＝委譲なし）であり、旧agentは基準1違反（ペルソナ・判断動詞）でB段階の流用元にもならない。`python3 scripts/convert-cc-to-ghc.py` で `.github/` を再生成＝**agent無しのクリーンな8ファイル**（prompts/bp.prompt.md + skills配下SKILL/3WF/3resource）。`.claude/agents/` は消滅。A-1のCC合格は維持（削除は委譲の誘惑を減らすのみ）。
+  - 注: `bp.prompt.md` の `tools:` に `agent` が残る（mapping-rules の add_fields。2-3で「prompt file には tools 必須」と実証済み）。stage Aでは未使用だが、実証済み要件のため温存。GHCが無委譲なら不変条件5はPASS、もし委譲したらそれ自体が知見。
+- [ ] **step2 進行中** — verify-run.py に **GHCモード**を追加。GHC transcript の事実（下記「GHC transcript 形式」）に基づき実装。**OUT形の検出源だけが stage-A GHC で未確定**（端末stdoutは transcript に出ない／content.json は現状空）。→ 最初の実 stage-A GHC ラン1本で較正してから本実装を確定する方針。
+- [ ] step3 — GHC（VS Code）で `/blackpink white` / `quick party setlist` / `fierce vs emotional` を各2回 → GHCモードで判定。
+- [ ] step4 — 全PASS → A-3（CC/GHC両方OKの確認・差分文書化）。不合格 → 変換ルール or WF文言を1変数ずつ修正し再変換・再測定。
 
-**A-2 の手順:**
-1. `python3 scripts/convert-cc-to-ghc.py`（必要なら `--dry-run` 先行）で CC側A版（SKILL/3WF）を `.github/` に再変換。
-   - ⚠️ 旧 `.github/` には subagent前提の agents/prompts が残る。A版はサブエージェント無しなので、変換対象（SKILL + workflows）と不要物の扱いを変換スクリプトで確認。`scripts/mapping-rules.json` の現行ルールが「A版（委譲なし・親が全Step）」を正しく写すか要点検。
-2. verify-run.py に **GHCモード**を追加（runSubagent不在＝Stage Aでは別コンテキスト無し。判定は: prompt/skill読込→filter-songs実行（`/tmp/bp-filter.log`）→各Step OUT形→委譲なし）。観測元は `workspaceStorage/GitHub.copilot-chat/transcripts/*.jsonl`。
-3. GHC（VS Code）で `/blackpink white` / `quick party setlist` / `fierce vs emotional` を各2回 → GHCモードで判定。
-4. 全PASS → A-3（CC/GHC両方OKの確認・差分文書化）。不合格 → 変換ルール or WF文言を1変数ずつ修正し再変換・再測定。
+**GHC transcript 形式（2026-06-02 実ログ6本を解析して確定。`workspaceStorage/<ws>/GitHub.copilot-chat/transcripts/*.jsonl`）:**
+- 1行=1イベント `{type, data, id, timestamp, parentId}`。
+- `type`: `session.start` / `assistant.message`(data: content, toolRequests[], reasoningText) / `assistant.turn_start|turn_end` / `user.message`(data: content) / `tool.execution_start`(data: toolCallId, **toolName**, **arguments**) / `tool.execution_complete`(data: toolCallId, **success のみ＝出力なし**)。
+- toolName 実測: `read_file`(args filePath/startLine/endLine)＝Read相当 / `run_in_terminal`(args command/explanation)＝Bash相当 / `runSubagent`(args prompt/description/agentName)＝**委譲マーカー** / `semantic_search`/`grep_search`/`file_search`/`list_dir`/`session_store_sql`/`manage_todo_list`。
+- **CCとの差（重要）:**
+  1. 親の元コマンド（`/blackpink white`）は **user.message として記録されない**（session.start 直後に assistant が応答）。→ GHCモードは theme を**`--theme` で受ける**（transcript から抽出不可）。
+  2. 親はファイルを **`run_in_terminal` の `cat`** で読むことがある（read_file とは限らない）。→ WF読込検出は read_file の filePath と run_in_terminal の `cat .../workflows/<wf>.md` の**両方**を走査。
+  3. **端末stdoutは transcript に出ない**（execution_complete は success のみ）。large OUT は本来 `chat-session-resources/<session>/call_<id>/content.json` だが**現状ディレクトリは空**。→ 信頼できるテキスト源は `assistant.message.content` のみ。OUT形マーカー（has_dance_break 等）は assistant 本文＋（在れば）content.json を走査。filter-songs 実行は **`/tmp/bp-filter.log`** が主証拠（端末stdout不在のため）。
+  4. 委譲なし検出 = **runSubagent の出現数 0**（CCの Task==0 に相当）。
 
 **測定の作法（A-1で確立）:** 各ランの前に `/clear`（コールド＆1ラン1transcript）。最初に `: > /tmp/bp-filter.log`。判定は transcript をツールで読む（貼り付け整形は誤読の元）。
 
