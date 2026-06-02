@@ -276,6 +276,22 @@ def analyze_ghc(path):
     chunks = []        # (idx, lowered_text) — assistant narration only
     run_ts = []
 
+    # GHC records a tool call in TWO places: as assistant.message.toolRequests[]
+    # (when the parent requests it) and as tool.execution_start (when it begins).
+    # The final turn often has the request logged but the execution_start not yet
+    # flushed, so we MUST scan both and de-dupe by toolCallId. arguments is a dict
+    # on execution_start but a JSON-string inside toolRequests — handle both.
+    seen_calls = set()
+    tool_calls = []    # (idx, name, args_blob) deduped by toolCallId
+
+    def add_tool(idx, call_id, name, args):
+        blob = args if isinstance(args, str) else json.dumps(args)
+        key = call_id or "%d:%s:%s" % (idx, name, blob[:40])
+        if key in seen_calls:
+            return
+        seen_calls.add(key)
+        tool_calls.append((idx, name, blob))
+
     def note_wf(name, idx):
         nonlocal read_wf, read_wf_idx
         if read_wf is None:
@@ -288,28 +304,30 @@ def analyze_ghc(path):
         if etype == "assistant.message":
             txt = (d.get("content") or "") + "\n" + (d.get("reasoningText") or "")
             chunks.append((idx, txt.lower()))
+            for r in (d.get("toolRequests") or []):
+                add_tool(idx, r.get("toolCallId"),
+                         r.get("name"), r.get("arguments") or {})
 
         elif etype == "tool.execution_start":
-            tn = d.get("toolName")
-            args = d.get("arguments", {}) or {}
-            if tn == "read_file":
-                fp = args.get("filePath", "") or ""
-                m = _WF_IN_PATH.search(fp)
-                if m:
-                    note_wf(m.group(1), idx)
-            elif tn == "run_in_terminal":
-                cmd = args.get("command", "") or ""
-                # The parent may `cat` the workflow file to read it.
-                m = _WF_IN_PATH.search(cmd)
-                if m:
-                    note_wf(m.group(1), idx)
-                n = cmd.count("filter-songs.sh")
-                if n:
-                    filter_cmd_count += n
-                    if first_filter_idx is None:
-                        first_filter_idx = idx
-            elif tn == "runSubagent":
-                subagent_calls += 1
+            add_tool(idx, d.get("toolCallId"),
+                     d.get("toolName"), d.get("arguments", {}) or {})
+
+    # Process the deduped tool calls in file order so read_wf_idx / first_filter_idx
+    # reflect the earliest occurrence (for the Step-order invariant).
+    for idx, name, blob in sorted(tool_calls, key=lambda c: c[0]):
+        if name in ("read_file", "run_in_terminal"):
+            # WF read via read_file(filePath) OR a `cat .../workflows/x.md`.
+            m = _WF_IN_PATH.search(blob)
+            if m:
+                note_wf(m.group(1), idx)
+        if name == "run_in_terminal":
+            n = blob.count("filter-songs.sh")
+            if n:
+                filter_cmd_count += n
+                if first_filter_idx is None:
+                    first_filter_idx = idx
+        elif name == "runSubagent":
+            subagent_calls += 1
 
     chunks.sort(key=lambda c: c[0])
     searchable = "\n".join(t for _, t in chunks)
