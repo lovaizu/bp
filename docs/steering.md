@@ -352,7 +352,15 @@ quick.md / versus.md を optimized.md と同形のA版に再構築（commit c586
 
 ### 現在の作業状態（次セッションはここから）★RESUME
 
-**A-1（CC）完了＝3WF×2ラン 6/6 全PASS（2026-06-02、`/blackpink` 入口）。A-2 進行中: step1・step2 完了。step3＝CC `/bp` 入口 6/6 全PASS 完了（下記）。残り＝GHC 6本。**
+**A-1（CC）完了＝3WF×2ラン 6/6 全PASS（2026-06-02、`/blackpink` 入口）。A-2 進行中: step1・step2 完了。step3＝CC `/bp` 入口 6/6 全PASS 完了（下記）。GHC初回6本は測定したが【モデル交絡で無効】（下記★GHC初回測定）→ 同等モデルで測り直しが必要。**
+
+**★GHC初回測定の知見（2026-06-02、無効だが重要な学び3点）:** `/bp` で6本測定。verify-run.py は全FAIL判定したが、**判定を覆す事実が判明**。
+1. **【誤判定の訂正】GHC 6本は画面上では全て完走していた**（最終セットリスト生成まで到達）。エージェントが transcript の静止（イベント数が増えない）から「未完走」と推測したのは誤り。→ **GHCの .jsonl transcript は最終OUT生成ターン（セットリスト本体）を記録しない**（中間の読込・filter実行までは記録）。**画面出力が真の証拠**。「transcript静止＝未完走」と推測してはいけない（出力の妥当性・到達を transcript の有無から推論しない＝[[feedback_fact-based]]）。
+2. **【モデル交絡＝測定無効】CC=Opus 4.8（最上位）vs GHC=GPT mini/Haikuレベル（小型・ユーザー証言）**。bp.prompt.md/SKILL/WF/CC側いずれも `model:` 無指定＝各プラットフォームのデフォルトに従う。GHCで観測した非決定性（WF読まない2/6・filter-songs.sh実行1/6・JSON/markdown混在）は**小型モデルの指示追従不足が主因の可能性が高く、プラットフォーム差と分離不能**。→ **「GHC stage-Aは非決定的」という整理は撤回**。同等性能モデルで測り直すまで CC/GHC 差は語れない。
+3. **判定器バグ修正済み（commit済）:** verify-run.py GHCモードが `tool.execution_start` のみ走査し `assistant.message.toolRequests` を見落としていた（最終ターンのツールを取りこぼす）。両ソース走査＋toolCallId dedupe に修正。CC回帰なし。ただし上記1により、最終OUT生成ターン自体が transcript に無いため check4 は原理的に観測限界が残る。
+
+**★NEXT ACTION（次セッション）★最優先:** **GHCで同等モデルに揃えて6本を測り直す。** ①VS Codeのモデルピッカーで利用可能な最上位（CCのOpus 4.8に最も近いもの。Claude Sonnet系など）を選ぶ、または bp.prompt.md/CC側に同一 `model:` を明示指定（要：両プラットフォームでの利用可否確認）。②揃えた条件で `/bp` 6本をコールド測定。③GHCは**画面出力も保存**（transcriptは最終OUTを欠くため）。判定は transcript（読込・filter・委譲）＋画面（最終OUT形）の併用。
+- 旧NEXT ACTION（無印モデルでのGHC測定）は↑の交絡判明で無効化。
 
 **★CC `/bp` 入口 6/6 全PASS（2026-06-02）:** 6本すべて verify-run.py 5/5 PASS。**`/bp` 入口でも3WFの層2が決定的に再現**＝A-1（`/blackpink` 入口）と同結果がエントリ込みで確認。**`bp→SKILL移譲`（配管層）も有効。**
 
@@ -367,10 +375,9 @@ quick.md / versus.md を optimized.md と同形のA版に再構築（commit c586
 
 **⚠️ 計器の教訓（リセット運用）:** filter-songs.sh の証拠ログ `/tmp/bp-filter.log` は**貯めっぱなし運用が正**（各ランの時間窓で in-window 判定＝PASS方向にしか動かない）。当初 `reset` をランと非同期に複数回実行し、前ランのログ行を後続リセットで消した結果、white r2/quick r1/versus r1 の初回測定が check3 のみアーティファクトFAIL（bash参照≥1・他4条件PASSで filter実行自体は transcript で確認できたが、ログ証拠を喪失）。→ **貯めっぱなしで再測定し3本ともクリーン5/5 PASS**（上表）。**今後の作法: ログはリセットしない。各ランは時間窓で切り分ける。**
 
-**★NEXT ACTION（次セッションはここから）:** GHC 6本（同一6テーマを `/bp` で）。各ランはユーザー操作のコールドセッションで。判定はエージェントが verify-run.py --platform ghc で実施。
-- 測定手順: ①**ログはリセットしない（貯めっぱなし）** ②**新規/コールドのセッション**で1ラン（GHC=VS Codeで `/bp <theme>`）③1ラン=1 transcript。
-- 判定: CC=`python3 scripts/verify-run.py <t.jsonl>`／GHC=`python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>`。
-- ⚠️ **測定は必ずユーザー操作のコールドセッションで行う。今動いているセッションの中で `/bp` を起動して測ってはいけない**（このセッションは steering・WF・振り分けを全部知っている＝汚染。かつ巨大な複数目的 transcript で1ラン1ファイルにならない。A-1 と同条件にもならない）。エージェントの役割は transcript の判定と記録のみ。
+**測定手順（共通）:** ①**ログはリセットしない（貯めっぱなし）** ②**新規/コールドのセッション**で1ラン（CC=`/clear`→`/bp <theme>`、GHC=VS Codeで `/bp <theme>`）③1ラン=1 transcript。
+- 判定: CC=`python3 scripts/verify-run.py <t.jsonl>`／GHC=`python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>`。GHCは画面出力も保存して併用。
+- ⚠️ **測定は必ずユーザー操作のコールドセッションで行う。今動いているセッションの中で `/bp` を起動して測ってはいけない**（このセッションは steering・WF・振り分けを全部知っている＝汚染。かつ巨大な複数目的 transcript で1ラン1ファイルにならない）。エージェントの役割は transcript／画面出力の判定と記録のみ。
 
 **A-2 進捗:**
 - [x] **step1 完了** — 旧 big-bang 期のサブエージェント定義3つを**両プラットフォームから削除**（ユーザー承認＝選択肢1）。`.claude/agents/bp-*.md`（3）と `.github/agents/bp-*.agent.md`（3）を `git rm`。理由: A版はサブエージェント無し（不変条件5＝委譲なし）であり、旧agentは基準1違反（ペルソナ・判断動詞）でB段階の流用元にもならない。`scripts/convert-cc-to-ghc.py` で `.github/` を再生成＝**agent無しのクリーンな8ファイル**（prompts/bp.prompt.md + skills配下SKILL/3WF/3resource）。`.claude/agents/` は消滅。A-1のCC合格は維持。
