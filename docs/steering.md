@@ -36,7 +36,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] **フェーズ2-3完了**（2026-05-29） — GHC側テスト 3シナリオ全PASS（optimized×2・quick・versus）
 - **フェーズ2-4 実施中**（2026-05-29〜） — transcript解析で実行メカニズムを事実検証。①起動②別コンテキスト③スクリプト実行は実証。**④JSON受け渡しは非決定的（設計通りでない）と判明** = 両プラットフォーム共通の核心課題。「100%再現」等の過剰表現は撤回済み
 - **アプローチ転換（2026-05-30）** — ビッグバン検証を中止し、**段階的ビルドアップ**に移行。要素が入り組んで1変数に絞れない／直すと別が壊れる、を解消するため。目的は不変。詳細は「## 新アプローチ」
-- **A-1（CC）完了（2026-06-02）** — SKILL.md + optimized.md を基準1で再構築。`/blackpink white` ×2 を測定し `scripts/verify-run.py` で層2の全5不変条件が **2/2 PASS**。詳細は「## 新アプローチ → A-1 測定結果」。次は quick/versus を同形に作り直し→A-2（GHC自動変換）
+- **A-1（CC）完了（2026-06-02）** — 3WF（optimized/quick/versus）を基準1のA版に再構築し全て層2 PASS。optimized `white`×2・quick `party`×2・versus `fierce vs emotional`×2 を `scripts/verify-run.py` で判定＝**6/6 ラン全PASS**。詳細は「## 新アプローチ → A-1 測定結果」。次は A-2（GHC自動変換）
 
 
 ## テスト結果サマリ
@@ -308,7 +308,7 @@ planner   : 6 OK / 1 FAIL
 
 **段階的タスクラダー:**
 - [ ] **A. サブエージェント無し・メインのみで配管を再現性高く**（WFは後のサブ化を見越しファイル分割）
-  - [ ] A-1 CC OK / [ ] A-2 GHC自動変換OK / [ ] A-3 CC/GHC両方OK
+  - [x] A-1 CC OK（3WF×2=6/6 PASS, 2026-06-02） / [ ] A-2 GHC自動変換OK / [ ] A-3 CC/GHC両方OK
 - [ ] **B. 1ステップずつサブエージェント化、各段で再現性確認**
   - [ ] B-1(1WF): CC→GHC自動変換→CC/GHC … [ ] B-2(2WF) … と積み上げ
 - 各段で verify-run.py（or 手解析）で層2不変条件を検証してから次へ。Aもさらに細かく割ってよい。
@@ -333,23 +333,43 @@ planner   : 6 OK / 1 FAIL
 - **既知の計器限界:** bp-filter.log は共有グローバル。2ランが同分内のため in-window 切り分けは厳密でない（16/20・20/20）。check成立には影響なし（両run bash参照≥1・ログ≥1）。
 - verify-run.py 初版の Step順チェックは assistant全文→tool_result全文の順で連結し位置が時系列とズレるバグ→**真の file 順で連結するよう修正済み**。
 
+### A-1 測定結果: quick / versus（2026-06-02）★合格
+
+quick.md / versus.md を optimized.md と同形のA版に再構築（commit c58603a）。各テーマを fresh CCセッション（`/clear`で各ラン分離）で2回ずつ測定。verify-run.py は**WFごとプロファイル**で判定（quick=S1/S3、versus=S1/S2/S3。versus の S2 マーカーは flow_score+recommended）。
+
+| WF / theme | transcript | ルーティング | Step順 | filter | OUT形 | 委譲なし | 総合 |
+|-----------|-----------|------------|--------|--------|-------|---------|------|
+| quick `party` r1 | 972a33c9 | quick.md | S1≤S3 | ✓(3) | S1/S3 | Task0 | **PASS** |
+| quick `party` r2 | f320c7d4 | quick.md | S1≤S3 | ✓(1) | S1/S3 | Task0 | **PASS** |
+| versus `fierce vs emotional` r1 | 4080e7c1 | versus.md | S1≤S2≤S3 | ✓(3) | S1/S2/S3 | Task0 | **PASS** |
+| versus `fierce vs emotional` r2 | 634ad1b9 | versus.md | S1≤S2≤S3 | ✓(2) | S1/S2/S3 | Task0 | **PASS** |
+
+**所見:**
+- 3WF×2ラン＝**6/6 全PASS**。A版（サブエージェント無し・親が全Step実行）はCCで層2が決定的に再現。
+- versus は4ステップ（findA+findB→compare→show-plans）が層2通り。比較OUT（flow_score・recommended）も全ラン出現。
+- **verify-run.py 修正:** `/clear` が直前に空 `<command-args>` を残すため、初版は theme を空取りして誤ルーティング判定→**command-name が /blackpink のブロックからのみ args 取得**するよう修正。これで quick/versus も正しく判定。
+- 計器ログ in-window は連続実行で重なる（3/5/12/10 ÷ 30）が、bash参照≥1が主判定のため check3 成立に影響なし。
+
 ### 現在の作業状態（次セッションはここから）★RESUME
 
-**A-1（CC optimized）合格。quick/versus を A版に作り直し済み（2026-06-02, commit c58603a）。次は quick/versus の CC測定。**
+**A-1（CC）完了＝3WF×2ラン 6/6 全PASS（2026-06-02）。次は A-2: CC側A版を `scripts/convert-cc-to-ghc.py` でGHCへ自動変換し、GHCで同じ層2を再現させる。**
 
-**現状ファイル:**
-- ✅ `.claude/skills/blackpink/SKILL.md` — ルーティングのみ（基準1準拠・A-1で検証済み）
-- ✅ `.claude/skills/blackpink/workflows/optimized.md` — A版・検証済み（5/5 PASS ×2）
-- ✅ `.claude/skills/blackpink/workflows/quick.md` — **A版に作り直し済み**（find→show-plan の2ステップ・最大8曲）。**CC測定待ち**
-- ✅ `.claude/skills/blackpink/workflows/versus.md` — **A版に作り直し済み**（findA+findB→compare→show-plans の4ステップ）。**CC測定待ち**
-- ✅ `scripts/verify-run.py` — 層2判定器（**WFごとプロファイル対応**: optimized=S1/S2/S3, quick=S1/S3, versus=S1/S2/S3 with flow_score+recommended）。GHCのrunSubagent/content.json対応は B/A-2 で拡張
-- 🔒 `.github/` 配下すべて — 旧再生成物。**A-2（GHC自動変換）まで触らない**
+**現状ファイル（CC側A版＝検証済み・確定）:**
+- ✅ `.claude/skills/blackpink/SKILL.md` — ルーティングのみ
+- ✅ `.claude/skills/blackpink/workflows/optimized.md` — A版（3ステップ）
+- ✅ `.claude/skills/blackpink/workflows/quick.md` — A版（2ステップ・最大8曲）
+- ✅ `.claude/skills/blackpink/workflows/versus.md` — A版（4ステップ）
+- ✅ `scripts/verify-run.py` — 層2判定器（WFごとプロファイル。**現状CC transcript専用**。GHCは runSubagent 窓/ content.json 形式なので A-2 で GHC モードを追加する必要あり）
+- 🔒 `.github/` 配下すべて — **旧 big-bang 期の再生成物（subagent版）。A-2 で上書き再生成する**
 
-**次の一手:** fresh CCセッションで測定（各2回）→ `python3 scripts/verify-run.py --latest 4` で判定。
-- quick: `/blackpink quick party setlist` ×2
-- versus: `/blackpink fierce vs emotional` ×2
-- ログ初期化: `: > /tmp/bp-filter.log`
-- 全PASS → A-2（`scripts/convert-cc-to-ghc.py` でGHC再生成）。不合格 → 該当WFを基準1の範囲で1変数ずつ改善し再測定。
+**A-2 の手順:**
+1. `python3 scripts/convert-cc-to-ghc.py`（必要なら `--dry-run` 先行）で CC側A版（SKILL/3WF）を `.github/` に再変換。
+   - ⚠️ 旧 `.github/` には subagent前提の agents/prompts が残る。A版はサブエージェント無しなので、変換対象（SKILL + workflows）と不要物の扱いを変換スクリプトで確認。`scripts/mapping-rules.json` の現行ルールが「A版（委譲なし・親が全Step）」を正しく写すか要点検。
+2. verify-run.py に **GHCモード**を追加（runSubagent不在＝Stage Aでは別コンテキスト無し。判定は: prompt/skill読込→filter-songs実行（`/tmp/bp-filter.log`）→各Step OUT形→委譲なし）。観測元は `workspaceStorage/GitHub.copilot-chat/transcripts/*.jsonl`。
+3. GHC（VS Code）で `/blackpink white` / `quick party setlist` / `fierce vs emotional` を各2回 → GHCモードで判定。
+4. 全PASS → A-3（CC/GHC両方OKの確認・差分文書化）。不合格 → 変換ルール or WF文言を1変数ずつ修正し再変換・再測定。
+
+**測定の作法（A-1で確立）:** 各ランの前に `/clear`（コールド＆1ラン1transcript）。最初に `: > /tmp/bp-filter.log`。判定は transcript をツールで読む（貼り付け整形は誤読の元）。
 
 **観測手順の詳細は本セクション「観測・検証方法」を参照。検証は貼り付けでなく transcript を読む。**
 

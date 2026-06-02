@@ -139,10 +139,12 @@ def analyze(path):
 
         if bt == "text":
             txt = b.get("text", "") or ""
-            # /blackpink command args
-            mcmd = re.search(r"<command-args>([^<]*)</command-args>", txt)
-            if mcmd and cmd_args is None:
-                cmd_args = mcmd.group(1).strip()
+            # /blackpink command args — capture ONLY from the block that holds the
+            # blackpink command-name (a preceding /clear also emits empty args).
+            if cmd_args is None and "<command-name>/blackpink</command-name>" in txt:
+                mcmd = re.search(r"<command-args>([^<]*)</command-args>", txt)
+                if mcmd:
+                    cmd_args = mcmd.group(1).strip()
             if role == "assistant":
                 chunks.append((idx, txt.lower()))
 
