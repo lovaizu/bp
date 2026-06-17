@@ -3,14 +3,28 @@ The user gives two themes (e.g. "fierce vs emotional"). If only one theme is pre
 
 ## Step 1A — Find songs for theme A
 IN: the first theme.
-1. For each mood tag that fits theme A, run:
+1. Select mood tags that match theme A from the available tags:
+   acoustic, anthemic, bright, carefree, chill, classical, confident, conflicted,
+   cultural, dramatic, dreamy, elegant, emotional, empowering, energetic, fierce,
+   fun, glamorous, graceful, heartfelt, hype, iconic, intense, party, playful,
+   powerful, rebellious, reflective, sad, smooth, sweet, synthy, triumphant,
+   uplifting, vulnerable, warm, yearning, youthful
+   Use only filter-songs.sh to retrieve songs; do not use any other file access or search method.
+   For each selected tag, run:
    `bash .github/skills/blackpink/resources/filter-songs.sh .github/skills/blackpink/resources/songs.json mood <tag>`
 2. Keep up to 10 songs from the combined results.
 OUT: result_a — a JSON array of the kept songs, each with: id, title, bpm, energy, mood, duration_sec, members_featured, has_dance_break, suitable_for.
 
 ## Step 1B — Find songs for theme B
 IN: the second theme.
-1. For each mood tag that fits theme B, run:
+1. Select mood tags that match theme B from the available tags:
+   acoustic, anthemic, bright, carefree, chill, classical, confident, conflicted,
+   cultural, dramatic, dreamy, elegant, emotional, empowering, energetic, fierce,
+   fun, glamorous, graceful, heartfelt, hype, iconic, intense, party, playful,
+   powerful, rebellious, reflective, sad, smooth, sweet, synthy, triumphant,
+   uplifting, vulnerable, warm, yearning, youthful
+   Use only filter-songs.sh to retrieve songs; do not use any other file access or search method.
+   For each selected tag, run:
    `bash .github/skills/blackpink/resources/filter-songs.sh .github/skills/blackpink/resources/songs.json mood <tag>`
 2. Keep up to 10 songs from the combined results.
 OUT: result_b — same JSON shape as result_a.
