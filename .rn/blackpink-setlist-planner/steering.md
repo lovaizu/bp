@@ -42,7 +42,9 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 **Steps**:
 
 - [x] モデル方針を決定（D-4）: CC=Opus 4.8 流用・GHC=Sonnet 4.6 で再測定
-- [ ] GHC で Sonnet 4.6 コールドセッション × 6ラン: white×2 / quick-party×2 / versus-fierce-emotional×2、各ランの画面出力も保存する
+- [x] GHC white × 2ラン完了（5d15c2b9, 984f0d7c）— checker 4/5 PASS, S2/S3 obs.limit, 画面確認 PASS
+- [ ] GHC quick-party × 2ラン（コールドセッション）— `/bp quick simple party setlist`
+- [ ] GHC versus × 2ラン（コールドセッション）— `/bp fierce vs emotional`
 - [ ] GHC 各ランを `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>` で判定する
 - [ ] 結果（CC 既存6本 + GHC 新規6本）を State に記録する
 - [ ] self-check (OK/NG per completion criterion, record in checks/task-1.md)
@@ -133,8 +135,8 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 # State
 
-- **Status**: in progress
+- **Status**: paused
 - **Date**: 2026-06-17
-- **Last completed**: D-4 決定 — CC=Opus 4.8 流用・GHC=Sonnet 4.6 で再測定（CC 既存6/6 PASS は有効）
-- **Next**: #1 — GHC Sonnet 4.6 で6ラン測定（white×2 / quick-party×2 / versus-fierce-emotional×2）
-- **Notes**: GHC初回6本（white=faa876c2/ffd6c9b5, quick=51df7012/eaee76be, versus=8469e7e2/bea91dd7）はモデル交絡で無効。GHC較正ラン1本（16125f49, `/blackpink white`）は jq クォート不正でハング・verify-run.py FAIL。既存 CC Opus 4.8 の6本も無効化（D-4）。測定は必ずユーザー操作のコールドセッションで行う。
+- **Last completed**: GHC white × 2ラン完了（5d15c2b9, 984f0d7c）— Task #1 進行中
+- **Next**: #1 の残り4ラン — GHC `/bp quick simple party setlist` × 2 → `/bp fierce vs emotional` × 2 → verify-run.py 判定 → steering 記録
+- **Notes**: GHC Sonnet 4.6 white×2 完了。verify-run.py の GHC 観測限界（S2/S3 が transcript に出ない）は確認・対処済み（commit 717fc88）。check 1/2/3/5 と check 4 S1 は自動 PASS 可能。check 4 S2/S3 は画面確認で手動 PASS。次セッション: コールドセッション（新規 VS Code チャット）で `/bp quick simple party setlist`×2 → `/bp fierce vs emotional`×2 を実行し、各ラン後に `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>` を実行する。transcript パス: /mnt/c/Users/tie303177/AppData/Roaming/Code/User/workspaceStorage/81624acf94463a01a068a042c69b4b95/GitHub.copilot-chat/transcripts/<session-id>.jsonl。ログ: /tmp/bp-filter.log はリセットしない（貯めっぱなし）。GHC 旧無効6本: white=faa876c2/ffd6c9b5, quick=51df7012/eaee76be, versus=8469e7e2/bea91dd7（モデル交絡で無効）。
