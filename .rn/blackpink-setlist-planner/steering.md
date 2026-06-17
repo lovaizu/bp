@@ -50,11 +50,11 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] GHC versus × 2ラン再測定（a4fd1ea1, 4cc101e4）— Sonnet 4.6, 2/2 PASS → 再現性確立
 - [x] CC quick-party × 2ラン（d14b70b5, 7dcb365a）— Sonnet 4.6, 2/2 PASS
 - [x] optimized.md / quick.md に mood tag list + 肯定的スクリプト制約を追加（commit 0de0805）— CC white C3 FAIL / GHC quick C3 FAIL 根本原因対応
-- [ ] CC white × 2ラン再測定（Sonnet 4.6, `/bp white smoke`, コールドセッション、修正後 WF）
-- [ ] GHC quick-party × 2ラン再測定（Sonnet 4.6, `/bp quick simple party setlist`, コールドセッション、修正後 WF）
-- [ ] 全ランを `verify-run.py` で判定し checks/task-1.md を更新する
-- [ ] self-check (全ラン完了後)
-- [ ] user review
+- [x] CC white × 2ラン再測定（4f680b67, 42328e49）— Sonnet 4.6, 2/2 PASS
+- [x] GHC quick-party × 2ラン再測定（209475f3, a6e704bb）— Sonnet 4.6, C1-C3/C5 PASS, C4 obs.limit → 画面 PASS
+- [x] 全ランを `verify-run.py` で判定し checks/task-1.md を更新する
+- [x] self-check (全ラン完了後) — OK
+- [x] user review
 
 **Completion criteria**:
 
@@ -141,4 +141,21 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 # State
 
-<!--STATE_PLACEHOLDER-->
+- **Status**: paused
+- **Date**: 2026-06-17
+- **Last completed**: Task #1 完了（user review 承認）— CC・GHC ともに Sonnet 4.6 で全 WF PASS 確認。commit 予定: "docs: complete task #1 — CC/GHC Sonnet 4.6 全WF PASS 確認"
+- **Next**: Task #2 — A-3: CC/GHC 比較と差分文書化
+- **Notes**: |
+    Task #1 結果サマリー:
+      CC Sonnet 4.6: quick 2/2 PASS, versus 2/2 PASS, white smoke 2/2 PASS（修正後再測定）
+      GHC Sonnet 4.6: 初回 5/6 PASS（88dfcb11 FAIL C3）→ 修正後再測定 6/6 PASS
+      全WFで filter-songs.sh 呼び出し確認済み。サブエージェント委譲なし確認済み。
+    根本原因と修正: mood タグリスト未提供 → LLM が songs.json 直読み。3WF に tag list + 肯定的制約追加で解決。
+    Task #2 (A-3) の作業内容:
+      1. CC・GHC 比較: stage-A 結果（PASS 数・FAIL 条件）を記録
+      2. 差分を「実装工夫で解決済み」と「プラットフォーム固有制約として残る」に分類
+      3. docs/cross-platform-agent-design.md の該当セクションに反映
+    Task #2 で参照すべき事実:
+      - GHC C4 は常に obs.limit（final OUT turn が transcript に記録されない）→ 画面確認が必須
+      - 非決定性あり（88dfcb11 同テーマで FAIL）→ 「プラットフォーム固有制約」候補
+      - CC は全条件を自動判定で PASS できる vs GHC は C4 のみ手動補完が必要 → 差分として記録
