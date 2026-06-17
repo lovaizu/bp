@@ -50,7 +50,7 @@ import sys
 from datetime import datetime, timezone
 
 PROJECT_TRANSCRIPT_DIR = os.path.expanduser(
-    "~/.claude/projects/-Users-kiyo-work-lovaizu-bp"
+    "~/.claude/projects/-home-tie303177-work-lovaizu-bp"
 )
 FILTER_LOG = "/tmp/bp-filter.log"
 
@@ -329,6 +329,26 @@ def analyze_ghc(path):
         elif name == "runSubagent":
             subagent_calls += 1
 
+    # GHC stores tool stdout in chat-session-resources/<session>/<callId>*/content.txt.
+    # The filter-songs JSON output (S1 field vocab) lives there; the final rendered
+    # setlist does NOT — it is displayed in the VS Code chat UI only. We include
+    # content.txt files so S1 markers become detectable; S2/S3 remain an observation
+    # limit (check 2 and 4 handle missing positions gracefully — see judge()).
+    session_id = os.path.splitext(os.path.basename(path))[0]
+    resources_dir = os.path.join(
+        os.path.dirname(os.path.dirname(path)), "chat-session-resources", session_id
+    )
+    extra_idx = 900000
+    if os.path.isdir(resources_dir):
+        for call_dir in sorted(os.listdir(resources_dir)):
+            txt_path = os.path.join(resources_dir, call_dir, "content.txt")
+            if os.path.exists(txt_path):
+                try:
+                    chunks.append((extra_idx, open(txt_path, encoding="utf-8").read().lower()))
+                    extra_idx += 1
+                except Exception:
+                    pass
+
     chunks.sort(key=lambda c: c[0])
     searchable = "\n".join(t for _, t in chunks)
 
@@ -404,8 +424,14 @@ def judge(a, theme_override=None):
         order_parts.append(f"read@{a['read_wf_idx']} < filter@{a['first_filter_idx']}")
     positions = [pos for _, _, pos, _, _ in step_results]
     if any(p is None for p in positions):
-        order_ok = False
-        order_parts.append("a step OUT not found")
+        missing = [lab for lab, _, pos, _, _ in step_results if pos is None]
+        order_parts.append(f"OUT not captured (obs.limit): {'+'.join(missing)}")
+        # Still fail if the steps that WERE found are out of order.
+        found_pos = [pos for pos in positions if pos is not None]
+        if found_pos and not all(
+                found_pos[i] <= found_pos[i + 1] for i in range(len(found_pos) - 1)):
+            order_ok = False
+            order_parts.append("found steps out of order")
     else:
         if not all(positions[i] <= positions[i + 1] for i in range(len(positions) - 1)):
             order_ok = False
