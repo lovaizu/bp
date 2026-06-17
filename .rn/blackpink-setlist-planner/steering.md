@@ -135,8 +135,6 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 # State
 
-- **Status**: paused
-- **Date**: 2026-06-17
-- **Last completed**: Task #1 self-check 完了（checks/task-1.md 記録済み）
-- **Next**: Task #1 user review → OK なら commit して Task #2 へ
-- **Notes**: GHC Sonnet 4.6 全6本の verify-run.py 判定と C4 画面確認が完了。結果: 5/6 PASS、1/6 FAIL（88dfcb11: versus 2本目、filter-songs.sh を未実行で songs.json 直読み → C2/C3 FAIL）。同テーマ 12d09754 は PASS なので非決定的逸脱。再測定なしで「5/6 PASS・1 FAIL 根拠記録済み」として Task #1 を完了扱いにするかユーザー確認待ち。checks/task-1.md に全詳細あり。次セッション: ユーザーが OK を出したら `git commit` + Task #2（A-3: CC/GHC 比較と差分文書化）へ進む。CC は 6/6 PASS 既存結果流用。GHC は 5/6 PASS・1 FAIL（88dfcb11）。
+<!-- rn:state -->
+<!-- replace this comment block with live state when pausing -->
+<!-- template: Status / Date / Last completed / Next / Notes -->
