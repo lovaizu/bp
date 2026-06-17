@@ -1390,3 +1390,72 @@ CC と GHC で引数の扱いが異なる。
 - CC側のサブエージェントはネスト不可（built-in制約）。GHC側はデフォルト無効、`chat.subagents.allowInvocationsFromSubagents` で有効化可能（最大深度5）。本設計では深さ1のみ使用
 - GHCのツール名はバージョンアップやUI操作で変わりうる。マッピングテーブルの定期更新が必要
 - GHCは `.claude/` ディレクトリからもエージェント・スキルを読み込めるため、変換なしでの動作確認も検討に値する
+
+
+## 11. stage-A 検証結果（CC/GHC 比較）
+
+> **測定日**: 2026-06-17  
+> **モデル**: CC・GHC ともに Sonnet 4.6（D-4 参照）  
+> **対象**: 3WF（quick / optimized / versus）× 各2ラン、計6ラン/プラットフォーム（有効ラン。修正前の FAIL ランは参考扱い）
+
+### 11.1 layer-2 不変条件
+
+| 条件 | 内容 |
+|------|------|
+| C1 | SKILL.md が WF を選択して実行する |
+| C2 | filter-songs.sh の実行インデックスが transcript に記録される |
+| C3 | filter-songs.sh が実際に実行される（bash 呼び出し確認） |
+| C4 | S1/S2/S3 の OUT 形式がすべて揃っている |
+| C5 | サブエージェントへの委譲が発生していない（stage-A は委譲なし） |
+
+### 11.2 測定結果サマリー
+
+**CC（有効6ラン・修正後）**
+
+| WF | ラン数 | C1 | C2 | C3 | C4 | C5 | 総合 |
+|---|---|---|---|---|---|---|---|
+| quick | 2 | PASS | PASS | PASS | PASS | PASS | 2/2 PASS |
+| optimized | 2 | PASS | PASS | PASS | PASS | PASS | 2/2 PASS |
+| versus | 2 | PASS | PASS | PASS | PASS | PASS | 2/2 PASS |
+
+**GHC（修正後再測定）**
+
+| WF | ラン数 | C1 | C2 | C3 | C4 | C5 | 総合 |
+|---|---|---|---|---|---|---|---|
+| quick | 2 | PASS | PASS | PASS | obs.limit→画面 PASS ※ | PASS | 2/2 PASS ※ |
+| optimized | 2 | PASS | PASS | PASS | obs.limit→画面 PASS ※ | PASS | 2/2 PASS ※ |
+| versus | 2 | PASS | PASS | PASS | obs.limit→画面 PASS ※ | PASS | 2/2 PASS ※ |
+
+※ C4 のみ手動画面確認による PASS。他の条件（C1–C3・C5）は verify-run.py で自動判定。
+
+> **修正前の初回測定（参考）:**  
+> CC（Sonnet 4.6）: quick 2/2 PASS, versus 2/2 PASS, optimized 0/2 PASS（C3 FAIL: db178cd7・c207ab91）。WF 別に修正・再測定を実施したため「初回6ラン一括」のベースラインは存在しない。  
+> GHC（Sonnet 4.6）: quick 2/2 PASS, optimized 2/2 PASS, versus 1/2 PASS（88dfcb11 C2・C3 FAIL）。
+
+### 11.3 差分分類
+
+#### 実装工夫で解決済み
+
+| 問題 | 発生プラットフォーム | 根本原因 | 修正内容 | 修正コミット |
+|---|---|---|---|---|
+| C3 FAIL（filter-songs.sh 未実行） | CC・GHC 共通 | WF に利用可能 mood タグリストがなく、LLM が songs.json を直参照した | 全 WF ファイルに 38 種タグリスト + `Use only filter-songs.sh` 肯定的制約を追加 | 0134464・0de0805 |
+| C2 FAIL（filter-run インデックスなし） | GHC（88dfcb11） | C3 FAIL の下流効果。filter-songs.sh が実行されなければ transcript に実行インデックスも残らない | C3 FAIL の修正（上記）と同一。C3 修正後 C2 は自動的に回復 | 0134464 |
+
+補足：GHC では同テーマ同 WF で 88dfcb11 が FAIL し 12d09754 が PASS した（修正前）。これはタグリスト欠如という共通原因への LLM の非決定的な応答として現れたものであり、プラットフォーム固有の非決定性ではなく WF の曖昧さが誘因と判断する。修正後は両プラットフォームとも FAIL なし。
+
+#### プラットフォーム固有制約として残る
+
+| 制約 | プラットフォーム | 内容 | 影響範囲 | 対処方法 |
+|---|---|---|---|---|
+| transcript 最終 OUT 欠落（obs.limit） | GHC のみ | GHC transcript が最終 OUT 生成ターンを記録しない。verify-run.py で C4 の自動判定が不能となる | C4 (OUT形確認) の自動判定 → 全 GHC ランで obs.limit | 画面出力の手動確認で補完（verify-run.py の GHC 用注釈として記録） |
+
+CC は transcript に最終 OUT が含まれるため C4 が自動判定できる。GHC は obs.limit が構造的であり、プロンプト変更では解消できないプラットフォーム制約。
+
+### 11.4 検証プロセスの差分
+
+| 項目 | CC | GHC |
+|---|---|---|
+| C1–C3・C5 自動判定 | verify-run.py で可 | verify-run.py で可 |
+| C4 自動判定 | verify-run.py で可 | 不能（obs.limit） |
+| C4 判定方法 | 自動 | 画面出力を手動確認で補完 |
+| コールドセッション要件 | 必須（測定はユーザー操作） | 必須（測定はユーザー操作） |

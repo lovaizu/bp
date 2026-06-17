@@ -72,11 +72,11 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 **Steps**:
 
-- [ ] CC 6/6 PASS・GHC 6/6 PASS の場合: 差分を「実装工夫で解決済み」と「プラットフォーム固有制約」に分類して記録する
-- [ ] GHC FAIL がある場合: FAIL 不変条件を特定し、変換ルールまたは WF 文言を1変数だけ修正して再変換・再測定する
-- [ ] 差分分類を `docs/cross-platform-agent-design.md` の該当セクションに反映してコミットする
-- [ ] self-check (OK/NG per completion criterion, record in checks/task-2.md)
-- [ ] user review
+- [x] CC 6/6 PASS・GHC 6/6 PASS の場合: 差分を「実装工夫で解決済み」と「プラットフォーム固有制約」に分類して記録する
+- [x] GHC FAIL がある場合: FAIL 不変条件を特定し、変換ルールまたは WF 文言を1変数だけ修正して再変換・再測定する
+- [x] 差分分類を `docs/cross-platform-agent-design.md` の該当セクションに反映してコミットする
+- [x] self-check (OK/NG per completion criterion, record in checks/task-2.md)
+- [x] user review
 
 **Completion criteria**:
 
