@@ -46,12 +46,14 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] GHC quick-party × 2ラン（a90a8ee6, 49e33249）— Sonnet 4.6, C1-C3/C5 PASS, C4 obs.limit 画面確認 PASS
 - [x] GHC versus × 2ラン（12d09754 PASS, 88dfcb11 C3 FAIL）— Sonnet 4.6, C4 obs.limit 画面確認 PASS
 - [x] 88dfcb11 FAIL 根本原因特定: versus.md に mood タグリスト＋肯定的スクリプト制約を追加（commit 0134464）
-- [ ] CC versus × 2ラン（Sonnet 4.6, `/bp fierce vs emotional`, コールドセッション）
-- [ ] GHC versus × 2ラン再測定（Sonnet 4.6, 修正後 WF, `/bp fierce vs emotional`, コールドセッション）
-- [ ] CC white × 2ラン（Sonnet 4.6, `/bp white smoke`, コールドセッション）
-- [ ] CC quick-party × 2ラン（Sonnet 4.6, `/bp quick simple party setlist`, コールドセッション）
+- [x] CC versus × 2ラン（5f198889, ee6d62ae）— Sonnet 4.6, 2/2 PASS
+- [x] GHC versus × 2ラン再測定（a4fd1ea1, 4cc101e4）— Sonnet 4.6, 2/2 PASS → 再現性確立
+- [x] CC quick-party × 2ラン（d14b70b5, 7dcb365a）— Sonnet 4.6, 2/2 PASS
+- [x] optimized.md / quick.md に mood tag list + 肯定的スクリプト制約を追加（commit 0de0805）— CC white C3 FAIL / GHC quick C3 FAIL 根本原因対応
+- [ ] CC white × 2ラン再測定（Sonnet 4.6, `/bp white smoke`, コールドセッション、修正後 WF）
+- [ ] GHC quick-party × 2ラン再測定（Sonnet 4.6, `/bp quick simple party setlist`, コールドセッション、修正後 WF）
 - [ ] 全ランを `verify-run.py` で判定し checks/task-1.md を更新する
-- [ ] self-check (全12本完了後)
+- [ ] self-check (全ラン完了後)
 - [ ] user review
 
 **Completion criteria**:
@@ -139,18 +141,4 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 # State
 
-- **Status**: paused
-- **Date**: 2026-06-17
-- **Last completed**: Task #1 継続中 — optimized.md / quick.md に tag list + positive constraint 追加（commit 0de0805）。全 3WF の C3 fix 適用済み
-- **Next**: CC white × 2・GHC quick × 2 再測定（コールドセッション）→ verify-run.py 判定 → checks/task-1.md 更新 → self-check → user review → commit "complete task #1" → Task #2 へ
-- **Notes**: |
-    モデル: CC=Sonnet 4.6, GHC=Sonnet 4.6（D-4 更新済み）。CC Opus 4.8 既存6本は無効。
-    WF 修正の経緯: versus.md（commit 0134464）→ optimized.md / quick.md（commit 0de0805）。
-    同じ根本原因: mood tag list 未提供 → LLM が songs.json 直読みまたはスクリプトスキップ。
-    Fix: Step 1 に利用可能タグ 38 種を列挙 + "Use only filter-songs.sh" 肯定的制約。
-    現時点の各 WF 測定結果（Sonnet 4.6）:
-      versus: CC 2/2 PASS（5f198889, ee6d62ae）、GHC 2/2 PASS（a4fd1ea1, 4cc101e4）→ 再現性確立
-      white: CC 2/2 FAIL C3（db178cd7, c207ab91）→ 修正後 再測定待ち。GHC 2/2 PASS（69716153, 9bde04ef）
-      quick: CC 2/2 PASS（d14b70b5, 7dcb365a）。GHC 1/2 FAIL C3（f1af5e9f）/ 1/2 PASS（4c5a3fb1）→ 修正後 再測定待ち
-    GHC C4 は全て obs.limit → 画面確認 PASS 済み（ユーザーが画面出力を貼付）。
-    次セッション: ①CC `/bp white smoke` × 2 コールドセッション ②GHC `/bp quick simple party setlist` × 2 コールドセッション → verify-run.py → task-1.md 更新 → self-check → user review
+<!--STATE_PLACEHOLDER-->
