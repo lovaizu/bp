@@ -141,21 +141,5 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 # State
 
-- **Status**: paused
-- **Date**: 2026-06-17
-- **Last completed**: Task #1 完了（user review 承認）— CC・GHC ともに Sonnet 4.6 で全 WF PASS 確認。commit 予定: "docs: complete task #1 — CC/GHC Sonnet 4.6 全WF PASS 確認"
-- **Next**: Task #2 — A-3: CC/GHC 比較と差分文書化
-- **Notes**: |
-    Task #1 結果サマリー:
-      CC Sonnet 4.6: quick 2/2 PASS, versus 2/2 PASS, white smoke 2/2 PASS（修正後再測定）
-      GHC Sonnet 4.6: 初回 5/6 PASS（88dfcb11 FAIL C3）→ 修正後再測定 6/6 PASS
-      全WFで filter-songs.sh 呼び出し確認済み。サブエージェント委譲なし確認済み。
-    根本原因と修正: mood タグリスト未提供 → LLM が songs.json 直読み。3WF に tag list + 肯定的制約追加で解決。
-    Task #2 (A-3) の作業内容:
-      1. CC・GHC 比較: stage-A 結果（PASS 数・FAIL 条件）を記録
-      2. 差分を「実装工夫で解決済み」と「プラットフォーム固有制約として残る」に分類
-      3. docs/cross-platform-agent-design.md の該当セクションに反映
-    Task #2 で参照すべき事実:
-      - GHC C4 は常に obs.limit（final OUT turn が transcript に記録されない）→ 画面確認が必須
-      - 非決定性あり（88dfcb11 同テーマで FAIL）→ 「プラットフォーム固有制約」候補
-      - CC は全条件を自動判定で PASS できる vs GHC は C4 のみ手動補完が必要 → 差分として記録
+<!-- rn:state -->
+<!-- rn:state-end -->
