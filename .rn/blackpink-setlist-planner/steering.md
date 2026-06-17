@@ -47,7 +47,11 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] GHC versus × 2ラン（12d09754 PASS, 88dfcb11 C3 FAIL）— C4 obs.limit 画面確認 PASS
 - [x] GHC 各ランを `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>` で判定する
 - [x] 結果（CC 既存6本 + GHC 新規6本）を checks/task-1.md に記録する
-- [x] self-check (OK — checks/task-1.md 参照)
+- [x] 88dfcb11 FAIL 根本原因特定: versus.md に mood タグリスト＋肯定的スクリプト制約を追加（commit 0134464）
+- [ ] CC versus × 2ラン再測定（修正後 WF で `/bp fierce vs emotional`、コールドセッション）
+- [ ] GHC versus × 2ラン再測定（修正後 WF で `/bp fierce vs emotional`、コールドセッション）
+- [ ] 再測定結果を verify-run.py で判定し checks/task-1.md に追記する
+- [ ] self-check (再測定後)
 - [ ] user review
 
 **Completion criteria**:
