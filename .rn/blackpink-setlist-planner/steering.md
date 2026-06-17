@@ -41,17 +41,17 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 **Steps**:
 
-- [x] モデル方針を決定（D-4）: CC=Opus 4.8 流用・GHC=Sonnet 4.6 で再測定
-- [x] GHC white × 2ラン完了（5d15c2b9, 984f0d7c）— checker 4/5 PASS, S2/S3 obs.limit, 画面確認 PASS
-- [x] GHC quick-party × 2ラン（a90a8ee6, 49e33249）— C1-C3/C5 PASS, C4 obs.limit 画面確認 PASS
-- [x] GHC versus × 2ラン（12d09754 PASS, 88dfcb11 C3 FAIL）— C4 obs.limit 画面確認 PASS
-- [x] GHC 各ランを `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>` で判定する
-- [x] 結果（CC 既存6本 + GHC 新規6本）を checks/task-1.md に記録する
+- [x] モデル方針を決定（D-4 更新）: CC・GHC ともに Sonnet 4.6 で測定（CC Opus 4.8 既存6本は無効）
+- [x] GHC white × 2ラン完了（5d15c2b9, 984f0d7c）— Sonnet 4.6, checker 4/5 PASS, C4 obs.limit 画面確認 PASS
+- [x] GHC quick-party × 2ラン（a90a8ee6, 49e33249）— Sonnet 4.6, C1-C3/C5 PASS, C4 obs.limit 画面確認 PASS
+- [x] GHC versus × 2ラン（12d09754 PASS, 88dfcb11 C3 FAIL）— Sonnet 4.6, C4 obs.limit 画面確認 PASS
 - [x] 88dfcb11 FAIL 根本原因特定: versus.md に mood タグリスト＋肯定的スクリプト制約を追加（commit 0134464）
-- [ ] CC versus × 2ラン再測定（修正後 WF で `/bp fierce vs emotional`、コールドセッション）
-- [ ] GHC versus × 2ラン再測定（修正後 WF で `/bp fierce vs emotional`、コールドセッション）
-- [ ] 再測定結果を verify-run.py で判定し checks/task-1.md に追記する
-- [ ] self-check (再測定後)
+- [ ] CC versus × 2ラン（Sonnet 4.6, `/bp fierce vs emotional`, コールドセッション）
+- [ ] GHC versus × 2ラン再測定（Sonnet 4.6, 修正後 WF, `/bp fierce vs emotional`, コールドセッション）
+- [ ] CC white × 2ラン（Sonnet 4.6, `/bp white smoke`, コールドセッション）
+- [ ] CC quick-party × 2ラン（Sonnet 4.6, `/bp quick simple party setlist`, コールドセッション）
+- [ ] 全ランを `verify-run.py` で判定し checks/task-1.md を更新する
+- [ ] self-check (全12本完了後)
 - [ ] user review
 
 **Completion criteria**:
@@ -130,11 +130,11 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - **Evidence**: A-1測定でA版はTask0（委譲なし）が確認済み
 - **Sources**: commit 6b1d4f2
 
-## D-4: GHC を Sonnet 4.6 で測定、CC Opus 4.8 結果は流用（2026-06-17）
+## D-4: CC・GHC ともに Sonnet 4.6 で測定（2026-06-17 更新）
 - **Issue**: GHC 初回6本は GPT mini/Haiku レベル（小型モデル）で実行されていた可能性が高く、指示追従不足がプラットフォーム差と分離不能だった
-- **Conclusion**: GHC を Sonnet 4.6 で再測定する。CC は Opus 4.8 のまま（既存6/6 PASS を流用）
-- **Rationale**: 目的はプラットフォーム差の検証であり、厳密なモデル一致ではない。Sonnet 4.6 以上であれば指示追従の性能差は許容範囲。CC Opus 4.8 の再測定は不要
-- **Evidence**: ユーザー確認「Sonnet 以上であれば CC と GHC で同等。比較したい訳ではない」（2026-06-17）
+- **Conclusion**: CC・GHC ともに Sonnet 4.6 で測定する。CC Opus 4.8 の既存6本は無効（異モデル）
+- **Rationale**: 目的はプラットフォーム差の検証。Sonnet 4.6 で揃えることで同一モデル比較が可能。CC Opus 4.8 結果は別モデルの測定であり流用不可
+- **Evidence**: 初回「Sonnet 以上であれば CC と GHC で同等」（2026-06-17）→ versus 再測定時に「今回はCC も Sonnet 4.6」と確認（2026-06-17）
 - **Sources**: 本会話
 
 # State
