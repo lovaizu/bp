@@ -135,8 +135,4 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 # State
 
-- **Status**: paused
-- **Date**: 2026-06-17
-- **Last completed**: GHC white × 2ラン完了（5d15c2b9, 984f0d7c）— Task #1 進行中
-- **Next**: #1 の残り4ラン — GHC `/bp quick simple party setlist` × 2 → `/bp fierce vs emotional` × 2 → verify-run.py 判定 → steering 記録
-- **Notes**: GHC Sonnet 4.6 white×2 完了。verify-run.py の GHC 観測限界（S2/S3 が transcript に出ない）は確認・対処済み（commit 717fc88）。check 1/2/3/5 と check 4 S1 は自動 PASS 可能。check 4 S2/S3 は画面確認で手動 PASS。次セッション: コールドセッション（新規 VS Code チャット）で `/bp quick simple party setlist`×2 → `/bp fierce vs emotional`×2 を実行し、各ラン後に `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>` を実行する。transcript パス: /mnt/c/Users/tie303177/AppData/Roaming/Code/User/workspaceStorage/81624acf94463a01a068a042c69b4b95/GitHub.copilot-chat/transcripts/<session-id>.jsonl。ログ: /tmp/bp-filter.log はリセットしない（貯めっぱなし）。GHC 旧無効6本: white=faa876c2/ffd6c9b5, quick=51df7012/eaee76be, versus=8469e7e2/bea91dd7（モデル交絡で無効）。
+<!-- rn:state-placeholder -->
