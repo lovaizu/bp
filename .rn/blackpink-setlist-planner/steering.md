@@ -41,19 +41,17 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 **Steps**:
 
-- [x] モデルを Sonnet 4.6 に統一することを決定（D-4）
-- [ ] CC で Sonnet 4.6 コールドセッション × 6ラン（white×2 / quick-party×2 / versus-fierce-emotional×2）、`/clear` → `/bp <theme>` の順
-- [ ] CC 各ランを `python3 scripts/verify-run.py <t.jsonl>` で判定・記録する
-- [ ] GHC で Sonnet 4.6 コールドセッション × 6ラン（同テーマ）、各ランの画面出力も保存する
-- [ ] GHC 各ランを `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>` で判定・記録する
-- [ ] 結果（CC 6本 + GHC 6本）を State に記録する
+- [x] モデル方針を決定（D-4）: CC=Opus 4.8 流用・GHC=Sonnet 4.6 で再測定
+- [ ] GHC で Sonnet 4.6 コールドセッション × 6ラン: white×2 / quick-party×2 / versus-fierce-emotional×2、各ランの画面出力も保存する
+- [ ] GHC 各ランを `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>` で判定する
+- [ ] 結果（CC 既存6本 + GHC 新規6本）を State に記録する
 - [ ] self-check (OK/NG per completion criterion, record in checks/task-1.md)
 - [ ] user review
 
 **Completion criteria**:
 
-- CC・GHC それぞれ 6ラン全て `verify-run.py` 実行済み（PASS/FAIL を問わず各ランの判定結果が記録されている）
-- 使用モデルが両プラットフォームとも Sonnet 4.6 であると明示されている
+- GHC で 6ラン全て `verify-run.py` 実行済み（PASS/FAIL を問わず各ランの判定結果が記録されている）
+- 使用モデルが GHC=Sonnet 4.6・CC=Opus 4.8 であると明示されている
 - FAIL が出た場合、FAIL した不変条件と transcript 上の根拠が記録されている
 
 ---
@@ -126,17 +124,17 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - **Evidence**: A-1測定でA版はTask0（委譲なし）が確認済み
 - **Sources**: commit 6b1d4f2
 
-## D-4: 両プラットフォームを Sonnet 4.6 に統一（2026-06-17）
-- **Issue**: CC の既存 A-1 結果は Opus 4.8 で取得。GHC は通常 Sonnet 4.6 を使用するため、モデル交絡が残っていた
-- **Conclusion**: CC・GHC ともに Sonnet 4.6 に統一する。既存 CC A-1（Opus 4.8）の6本は無効化し、Sonnet 4.6 で再測定する
-- **Rationale**: CC↔GHC の差をプラットフォーム差として語るにはモデルを揃えることが前提。Opus 4.8 は GHC で通常使わないため Sonnet 4.6 が共通の基準として適切
-- **Evidence**: ユーザー確認「GHC は Sonnet 4.6 で行う。Opus 4.8 も選べるが通常は使わない」（2026-06-17）
+## D-4: GHC を Sonnet 4.6 で測定、CC Opus 4.8 結果は流用（2026-06-17）
+- **Issue**: GHC 初回6本は GPT mini/Haiku レベル（小型モデル）で実行されていた可能性が高く、指示追従不足がプラットフォーム差と分離不能だった
+- **Conclusion**: GHC を Sonnet 4.6 で再測定する。CC は Opus 4.8 のまま（既存6/6 PASS を流用）
+- **Rationale**: 目的はプラットフォーム差の検証であり、厳密なモデル一致ではない。Sonnet 4.6 以上であれば指示追従の性能差は許容範囲。CC Opus 4.8 の再測定は不要
+- **Evidence**: ユーザー確認「Sonnet 以上であれば CC と GHC で同等。比較したい訳ではない」（2026-06-17）
 - **Sources**: 本会話
 
 # State
 
 - **Status**: in progress
 - **Date**: 2026-06-17
-- **Last completed**: D-4 決定 — 両プラットフォームを Sonnet 4.6 に統一（既存 CC A-1 Opus 4.8 の6本は無効化）
-- **Next**: #1 step1 — CC `/bp` を Sonnet 4.6 で6ラン再測定（white×2 / quick-party×2 / versus-fierce-emotional×2）
+- **Last completed**: D-4 決定 — CC=Opus 4.8 流用・GHC=Sonnet 4.6 で再測定（CC 既存6/6 PASS は有効）
+- **Next**: #1 — GHC Sonnet 4.6 で6ラン測定（white×2 / quick-party×2 / versus-fierce-emotional×2）
 - **Notes**: GHC初回6本（white=faa876c2/ffd6c9b5, quick=51df7012/eaee76be, versus=8469e7e2/bea91dd7）はモデル交絡で無効。GHC較正ラン1本（16125f49, `/blackpink white`）は jq クォート不正でハング・verify-run.py FAIL。既存 CC Opus 4.8 の6本も無効化（D-4）。測定は必ずユーザー操作のコールドセッションで行う。
