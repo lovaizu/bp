@@ -43,11 +43,11 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 - [x] モデル方針を決定（D-4）: CC=Opus 4.8 流用・GHC=Sonnet 4.6 で再測定
 - [x] GHC white × 2ラン完了（5d15c2b9, 984f0d7c）— checker 4/5 PASS, S2/S3 obs.limit, 画面確認 PASS
-- [ ] GHC quick-party × 2ラン（コールドセッション）— `/bp quick simple party setlist`
-- [ ] GHC versus × 2ラン（コールドセッション）— `/bp fierce vs emotional`
-- [ ] GHC 各ランを `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>` で判定する
-- [ ] 結果（CC 既存6本 + GHC 新規6本）を State に記録する
-- [ ] self-check (OK/NG per completion criterion, record in checks/task-1.md)
+- [x] GHC quick-party × 2ラン（a90a8ee6, 49e33249）— C1-C3/C5 PASS, C4 obs.limit 画面確認 PASS
+- [x] GHC versus × 2ラン（12d09754 PASS, 88dfcb11 C3 FAIL）— C4 obs.limit 画面確認 PASS
+- [x] GHC 各ランを `python3 scripts/verify-run.py --platform ghc --theme '<theme>' <t.jsonl>` で判定する
+- [x] 結果（CC 既存6本 + GHC 新規6本）を checks/task-1.md に記録する
+- [x] self-check (OK — checks/task-1.md 参照)
 - [ ] user review
 
 **Completion criteria**:
@@ -135,4 +135,8 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 # State
 
-<!-- rn:state-placeholder -->
+- **Status**: paused
+- **Date**: 2026-06-17
+- **Last completed**: Task #1 self-check 完了（checks/task-1.md 記録済み）
+- **Next**: Task #1 user review → OK なら commit して Task #2 へ
+- **Notes**: GHC Sonnet 4.6 全6本の verify-run.py 判定と C4 画面確認が完了。結果: 5/6 PASS、1/6 FAIL（88dfcb11: versus 2本目、filter-songs.sh を未実行で songs.json 直読み → C2/C3 FAIL）。同テーマ 12d09754 は PASS なので非決定的逸脱。再測定なしで「5/6 PASS・1 FAIL 根拠記録済み」として Task #1 を完了扱いにするかユーザー確認待ち。checks/task-1.md に全詳細あり。次セッション: ユーザーが OK を出したら `git commit` + Task #2（A-3: CC/GHC 比較と差分文書化）へ進む。CC は 6/6 PASS 既存結果流用。GHC は 5/6 PASS・1 FAIL（88dfcb11）。
