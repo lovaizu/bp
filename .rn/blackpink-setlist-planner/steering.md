@@ -27,6 +27,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - 1 task = 1 commit
 - 推測せず事実ベースで判断する（不確かな点は「未確認」と明記する）
 - 測定は必ずユーザー操作のコールドセッションで行う（このセッション内で `/bp` を起動して測定してはいけない）
+- 測定後の transcript ID はユーザーに聞かない。`scripts/verify-run.py --latest N` で自動検索する
 - filter-songs.sh の証拠ログ `/tmp/bp-filter.log` はリセットしない（貯めっぱなし運用・時間窓で切り分け）
 - 1変数ずつ変えて再測定する（ビッグバン検証は行わない）
 - GHC transcript は最終OUT生成ターンを欠く → 画面出力も証拠として保存する
@@ -94,8 +95,8 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 **Steps**:
 
-- [ ] CC 側に `bp-song-finder` サブエージェント定義を基準1（IN/OUT・作業指示のみ）で作成する
-- [ ] optimized WF の Step1 を finder 委譲形式に更新する
+- [x] CC 側に `bp-song-finder` サブエージェント定義を基準1（IN/OUT・作業指示のみ）で作成する
+- [x] optimized WF の Step1 を finder 委譲形式に更新する
 - [ ] CC で `/bp` 2ラン測定し `verify-run.py` 委譲あり版で PASS を確認する
 - [ ] `convert-cc-to-ghc.py` で GHC 側を再生成する
 - [ ] GHC で `/bp` 2ラン測定する（同等モデル・コールドセッション）
@@ -142,4 +143,16 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 # State
 
 <!-- rn:state -->
+Status: paused
+Date: 2026-06-17
+Last completed: Task #2（CC/GHC stage-A 差分文書化）
+Next: Task #3 ステップ3 — CC コールドセッションで `/bp` 2ラン測定（`--stage b`）
+
+Notes:
+- Task #3 実装は完了: `.claude/agents/bp-song-finder.md` 作成、`optimized.md` Step1 更新、`verify-run.py` stage-B 対応済み
+- WFプロンプトからのサブエージェント確実呼び出し方法を調査した結果: CC・GHC 両方とも「保証された明示構文」はなく、サブエージェントの description とタスク記述の一致度が委譲の鍵
+- optimized.md Step 1 現在の記述: "Use the agent tool to invoke the `bp-song-finder` subagent..." — これが LLM にとって十分か実測で確認する必要あり
+- 測定前に description 改善（"Use proactively when finding songs..."追加）を検討中だが、1変数ルールにより先に現状で測定してから変更するか決める
+- 次の具体アクション: ユーザーがコールドセッションで `/bp <theme>` を2回実行 → `scripts/verify-run.py --latest 2 --stage b` で判定
+- GHC 側は CC 測定 PASS 後に `convert-cc-to-ghc.py` で再生成
 <!-- rn:state-end -->

@@ -6,18 +6,22 @@ judges PASS/FAIL on the layer-2 (plumbing) invariants defined in
 docs/steering.md. Layer-3 content (which songs were picked, the prose
 quality) is intentionally NOT judged.
 
-Stage covered: A (no subagents — the parent executes every WF step itself).
+Stages covered:
+  A — no subagents (the parent executes every WF step itself). Default.
+  B — bp-song-finder subagent present; use --stage b for stage-B runs.
 
 What it checks per run (same five invariants on both platforms):
   1. Routing      — the theme routed to the expected workflow file
                     (SKILL.md rules: quick / versus / else→optimized).
   2. Step order   — the workflow was opened, then filter-songs.sh ran
                     (Step 1), then Step 2 OUT, then Step 3 OUT — in order.
-  3. filter-songs — the script actually executed (transcript shell call +
-                    the /tmp/bp-filter.log instrument, windowed to the run).
+  3. filter-songs — the script actually executed. Stage A: transcript shell
+                    call + /tmp/bp-filter.log windowed to the run. Stage B:
+                    filter-songs runs inside the subagent (no parent bash
+                    call), so log-only check (bp-filter.log in-window ≥ 1).
   4. OUT shapes   — Step 1 / Step 2 / Step 3 OUT field vocab is present.
-  5. No delegation— Stage A expects zero subagent calls
-                    (CC: Task tool_use; GHC: runSubagent).
+  5. Delegation   — Stage A expects zero subagent calls (Task/runSubagent);
+                    Stage B expects ≥ 1 (finder delegation present).
 
 Platform differences (both reduce to the same analyzed-dict, so judge()
 is shared). See docs/steering.md "GHC transcript 形式" for the facts:
@@ -143,6 +147,7 @@ def analyze(path):
     read_wf = None           # first workflow file Read
     read_wf_idx = None
     first_filter_idx = None  # first Bash containing filter-songs.sh
+    first_task_idx = None    # first Task (subagent) call
     filter_cmd_count = 0     # literal occurrences in Bash commands
     task_calls = 0
     chunks = []  # (idx, lowered_text) in true file order — used for ordering scan
@@ -187,6 +192,8 @@ def analyze(path):
                         first_filter_idx = idx
             elif name == "Task":
                 task_calls += 1
+                if first_task_idx is None:
+                    first_task_idx = idx
 
     # Build the searchable blob in true chronological (file) order so that a
     # token's character position reflects WHEN it was produced.
@@ -199,6 +206,7 @@ def analyze(path):
         "read_wf": read_wf,
         "read_wf_idx": read_wf_idx,
         "first_filter_idx": first_filter_idx,
+        "first_task_idx": first_task_idx,
         "filter_cmd_count": filter_cmd_count,
         "task_calls": task_calls,
         "searchable": searchable,
@@ -271,6 +279,7 @@ def analyze_ghc(path):
     read_wf = None
     read_wf_idx = None
     first_filter_idx = None
+    first_subagent_idx = None
     filter_cmd_count = 0
     subagent_calls = 0
     chunks = []        # (idx, lowered_text) — assistant narration only
@@ -328,6 +337,8 @@ def analyze_ghc(path):
                     first_filter_idx = idx
         elif name == "runSubagent":
             subagent_calls += 1
+            if first_subagent_idx is None:
+                first_subagent_idx = idx
 
     # GHC stores tool stdout in chat-session-resources/<session>/<callId>*/content.txt.
     # The filter-songs JSON output (S1 field vocab) lives there; the final rendered
@@ -359,7 +370,8 @@ def analyze_ghc(path):
         "read_wf_idx": read_wf_idx,
         "first_filter_idx": first_filter_idx,
         "filter_cmd_count": filter_cmd_count,
-        "task_calls": subagent_calls,     # runSubagent == CC's Task
+        "first_task_idx": first_subagent_idx,  # runSubagent == CC's Task
+        "task_calls": subagent_calls,
         "searchable": searchable,
         "ts_window": (min(run_ts), max(run_ts)) if run_ts else (None, None),
     }
@@ -393,7 +405,7 @@ def step_presence(blob, marker_key, min_present):
     return present_count >= min_present, pos
 
 
-def judge(a, theme_override=None):
+def judge(a, theme_override=None, stage='a'):
     theme = theme_override if theme_override is not None else a["cmd_args"]
     expected_wf = route_for_theme(theme)
     profile = PROFILES.get(expected_wf, PROFILES["optimized.md"])
@@ -412,16 +424,28 @@ def judge(a, theme_override=None):
         present, pos = step_presence(blob, mkey, minp)
         step_results.append((label, present, pos, minp, mkey))
 
-    # 2. Step order: WF read < first filter, then step OUT positions non-decreasing.
+    # 2. Step order: WF read then either first-filter (stage A) or first Task call
+    #    (stage B), then step OUT positions non-decreasing.
     order_parts = []
     order_ok = True
-    if a["read_wf_idx"] is None or a["first_filter_idx"] is None:
-        order_ok = False
-        order_parts.append("missing WF-read or filter-run")
-    else:
-        if not (a["read_wf_idx"] < a["first_filter_idx"]):
+    if stage == 'b':
+        anchor_idx = a.get("first_task_idx")
+        anchor_label = "finder"
+        if a["read_wf_idx"] is None or anchor_idx is None:
             order_ok = False
-        order_parts.append(f"read@{a['read_wf_idx']} < filter@{a['first_filter_idx']}")
+            order_parts.append("missing WF-read or finder-call")
+        else:
+            if not (a["read_wf_idx"] < anchor_idx):
+                order_ok = False
+            order_parts.append(f"read@{a['read_wf_idx']} < {anchor_label}@{anchor_idx}")
+    else:
+        if a["read_wf_idx"] is None or a["first_filter_idx"] is None:
+            order_ok = False
+            order_parts.append("missing WF-read or filter-run")
+        else:
+            if not (a["read_wf_idx"] < a["first_filter_idx"]):
+                order_ok = False
+            order_parts.append(f"read@{a['read_wf_idx']} < filter@{a['first_filter_idx']}")
     positions = [pos for _, _, pos, _, _ in step_results]
     if any(p is None for p in positions):
         missing = [lab for lab, _, pos, _, _ in step_results if pos is None]
@@ -441,13 +465,22 @@ def judge(a, theme_override=None):
     checks.append((f"2. Step order {labels}", order_ok, "; ".join(order_parts)))
 
     # 3. filter-songs.sh executed
+    # Stage A: parent runs filter-songs.sh directly → check bash refs + log.
+    # Stage B: filter-songs.sh runs inside the subagent (no parent bash call)
+    #          → log-only check (bp-filter.log in-window ≥ 1).
     inwin, total = count_filter_log(a["ts_window"])
-    filter_ok = a["filter_cmd_count"] >= 1 and (inwin is None or inwin >= 1)
     log_note = (f"log {inwin} in-window / {total} total" if inwin is not None
                 else "log absent")
-    checks.append(("3. filter-songs.sh ran",
-                   filter_ok,
-                   f"bash refs={a['filter_cmd_count']}; {log_note}"))
+    if stage == 'b':
+        filter_ok = inwin is not None and inwin >= 1
+        checks.append(("3. filter-songs.sh ran (Stage B, log-only)",
+                       filter_ok,
+                       f"bash refs in parent={a['filter_cmd_count']} (ignored); {log_note}"))
+    else:
+        filter_ok = a["filter_cmd_count"] >= 1 and (inwin is None or inwin >= 1)
+        checks.append(("3. filter-songs.sh ran",
+                       filter_ok,
+                       f"bash refs={a['filter_cmd_count']}; {log_note}"))
 
     # 4. OUT shapes (per workflow profile)
     out_ok = all(present for _, present, _, _, _ in step_results)
@@ -455,11 +488,17 @@ def judge(a, theme_override=None):
                       for lab, present, _, _, mkey in step_results)
     checks.append((f"4. OUT shapes ({labels})", out_ok, detail))
 
-    # 5. No subagent delegation (Stage A)
-    deleg_ok = a["task_calls"] == 0
-    checks.append(("5. No delegation (Stage A)",
-                   deleg_ok,
-                   f"Task calls={a['task_calls']}"))
+    # 5. Delegation check — Stage A: zero calls; Stage B: ≥ 1 call (finder present).
+    if stage == 'b':
+        deleg_ok = a["task_calls"] >= 1
+        checks.append(("5. Finder delegation present (Stage B)",
+                       deleg_ok,
+                       f"Task calls={a['task_calls']}"))
+    else:
+        deleg_ok = a["task_calls"] == 0
+        checks.append(("5. No delegation (Stage A)",
+                       deleg_ok,
+                       f"Task calls={a['task_calls']}"))
 
     return checks
 
@@ -492,7 +531,10 @@ def pick_latest_ghc(n):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Layer-2 invariant checker (Stage A, CC/GHC).")
+    ap = argparse.ArgumentParser(
+        description="Layer-2 invariant checker (Stage A/B, CC/GHC). "
+                    "Use --stage b for stage-B runs where bp-song-finder "
+                    "subagent delegation is expected.")
     ap.add_argument("transcripts", nargs="*", help="transcript .jsonl paths")
     ap.add_argument("--theme", default=None,
                     help="theme for routing check (CC: defaults to /blackpink "
@@ -503,6 +545,9 @@ def main():
                     help="auto-pick the N newest transcripts (CC: newest "
                          "/blackpink runs; GHC: newest transcripts, needs "
                          "--platform ghc)")
+    ap.add_argument("--stage", choices=["a", "b"], default="a",
+                    help="workflow stage to verify: a=no subagents (default), "
+                         "b=bp-song-finder subagent present")
     args = ap.parse_args()
 
     paths = list(args.transcripts)
@@ -529,7 +574,7 @@ def main():
             a = analyze_ghc(p)
         else:
             a = analyze(p)
-        checks = judge(a, theme_override=args.theme)
+        checks = judge(a, theme_override=args.theme, stage=args.stage)
         run_pass = all(ok for _, ok, _ in checks)
         all_pass = all_pass and run_pass
         shown_theme = a["cmd_args"] if a["cmd_args"] is not None else args.theme

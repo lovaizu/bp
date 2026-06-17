@@ -2,17 +2,20 @@ Do the steps in order. Each step's OUT is the next step's IN.
 
 ## Step 1 — Find songs
 IN: the user's theme.
-1. Select mood tags that match the theme from the available tags:
-   acoustic, anthemic, bright, carefree, chill, classical, confident, conflicted,
-   cultural, dramatic, dreamy, elegant, emotional, empowering, energetic, fierce,
-   fun, glamorous, graceful, heartfelt, hype, iconic, intense, party, playful,
-   powerful, rebellious, reflective, sad, smooth, sweet, synthy, triumphant,
-   uplifting, vulnerable, warm, yearning, youthful
-   Use only filter-songs.sh to retrieve songs; do not use any other file access or search method.
-   For each selected tag, run:
-   `bash .claude/skills/blackpink/resources/filter-songs.sh .claude/skills/blackpink/resources/songs.json mood <tag>`
-2. Keep up to 12 songs from the combined results.
-OUT: a JSON array of the kept songs, each with: id, title, bpm, energy, mood, duration_sec, members_featured, has_dance_break, suitable_for.
+Use the agent tool to invoke the `bp-song-finder` subagent with the following prompt
+(fill in the user's actual theme for `<theme>`):
+
+---
+theme: <theme>
+songs_json: .claude/skills/blackpink/resources/songs.json
+filter_sh: .claude/skills/blackpink/resources/filter-songs.sh
+max_songs: 12
+---
+
+Wait for the subagent to return a JSON object.
+If the result contains `"status": "error"`, show the error message to the user and stop.
+Do not modify the result. Pass the full JSON object unchanged to Step 2.
+OUT: the JSON object from the bp-song-finder subagent (unchanged).
 
 ## Step 2 — Order the setlist
 IN: Step 1 OUT; `.claude/skills/blackpink/resources/members.json`.
