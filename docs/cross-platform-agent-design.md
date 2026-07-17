@@ -302,12 +302,15 @@ WF は3種。ステップ数と委譲の並列度が異なる。
 ```mermaid
 flowchart LR
     subgraph quick["quick"]
+        direction LR
         q1[finder] --> q2[planner]
     end
     subgraph optimized["optimized"]
+        direction LR
         o1[finder] --> o2[evaluator] --> o3[planner]
     end
     subgraph versus["versus"]
+        direction LR
         vA["finder A"] --> vE[evaluator]
         vB["finder B"] --> vE
         vE --> vP[planner]
