@@ -258,11 +258,12 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 # State
 
 <!-- rn:state -->
-Status: not suspended
+Status: paused
 Date: 2026-07-24
-Last completed: D-8 — チェックスクリプトを各タスクに分散統合する形にタスク構成を修正（8タスク→7タスク）
-Next: #1 — 技術検証（チェックスクリプトを作成し、CCでマーカー・委譲・非委譲の再現性を実測確認する）
+Last completed: D-8 — チェックスクリプトを各タスクに分散統合する形にタスク構成を修正（8タスク→7タスク）。ブランチ履歴をmain基点で1コミットにスカッシュしforce-push済み
+Next: #1 — 最小チェックスクリプト（`scripts/check-transcript.py` 等）を作成し、`/techtest` をCCで3回コールドセッション実測してマーカー・委譲・非委譲の再現性を確認する
 
 Notes:
-- steering.md の新タスク構成についてユーザー確認待ち。承認が出たら、まず最小チェックスクリプト（`scripts/check-transcript.py` 等）を作成してから `/techtest` の3回実測を依頼する
+- `/techtest` 一式（`.claude/commands/techtest.md`, `.claude/agents/techtest-echo.md`）は作成済み・push済み。チェックスクリプトは未作成
+- 次のアクション: チェックスクリプト作成 → ユーザーにCCでの `/techtest hello` 3回コールドセッション実行を依頼 → transcript をスクリプトで判定
 <!-- rn:state-end -->
