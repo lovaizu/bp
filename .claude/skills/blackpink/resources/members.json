@@ -1,0 +1,44 @@
+{
+  "members": [
+    {
+      "id": "jisoo",
+      "name": "Jisoo",
+      "full_name": "Kim Ji-soo",
+      "role": ["vocalist", "visual"],
+      "solo_songs": ["flower"],
+      "strengths": ["stable_vocals", "stage_presence", "elegance"],
+      "performance_style": "graceful and expressive",
+      "vocal_range": "mezzo-soprano"
+    },
+    {
+      "id": "jennie",
+      "name": "Jennie",
+      "full_name": "Jennie Kim",
+      "role": ["rapper", "vocalist"],
+      "solo_songs": ["solo"],
+      "strengths": ["rap_flow", "charisma", "versatility"],
+      "performance_style": "fierce and commanding",
+      "vocal_range": "mezzo-soprano"
+    },
+    {
+      "id": "rose",
+      "name": "Rosé",
+      "full_name": "Roseanne Park",
+      "role": ["main_vocalist", "dancer"],
+      "solo_songs": ["on_the_ground", "gone", "hard_to_love"],
+      "strengths": ["emotional_vocals", "unique_tone", "acoustic"],
+      "performance_style": "emotional and captivating",
+      "vocal_range": "soprano"
+    },
+    {
+      "id": "lisa",
+      "name": "Lisa",
+      "full_name": "Lalisa Manoban",
+      "role": ["main_dancer", "rapper"],
+      "solo_songs": ["lalisa", "money"],
+      "strengths": ["dance", "stage_command", "rap"],
+      "performance_style": "explosive and dynamic",
+      "vocal_range": "mezzo-soprano"
+    }
+  ]
+}
