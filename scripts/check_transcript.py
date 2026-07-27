@@ -26,14 +26,20 @@ Judging named runs and finding candidate runs are two separate steps:
        check_transcript.py a.jsonl b.jsonl c.jsonl --expect 'start:theme=neon night'
 
   Every transcript named on the command line is judged. One that cannot be read
-  is a failure, never a smaller sample.
+  is a failure, never a smaller sample. --dry-run is step 1 only: it refuses to
+  run at all if expectations were given, so "3 of 3 passed" can never come from
+  a command that judged nothing.
+
+  A sample of N is N distinct runs. Naming the same file twice -- under any
+  spelling of its path -- is a usage error, and two transcripts that record the
+  same session are one run, not two.
 
 Discovery options (--latest only):
   --since ISO8601    window: only transcripts modified at or after this moment
   --theme TEXT       keep only runs whose `BPTRACE start` theme equals TEXT
   --project-dir DIR  where to look (default: derived from --repo)
   --repo PATH        repository the transcripts belong to (default: .)
-  --dry-run          print the selection and stop, without judging anything
+  --dry-run          print the selection and stop; refused with any expectation
 
   Every candidate inside the --since window that does not end up in the sample
   is listed with the reason it was left out. When expectations were given, an
@@ -75,7 +81,17 @@ BLACKPINK specific and the code is not:
       --expect-count 'start=1' \
       --expect-count 'delegate=1'
 
+Report-only (no expectation at all) prints the extracted facts and exits 0, and
+its JSON says `"passed": null` -- never `true`, which would read as a verdict
+nobody asked for.
+
 Exit codes: 0 = PASS (or report-only), 1 = FAIL, 2 = usage/IO/internal error.
+
+Coverage of this script, including the CLI tests that run it as a subprocess:
+
+  COVERAGE_PROCESS_START=$PWD/.coveragerc python -m coverage run -m pytest \
+      scripts/test_check_transcript.py
+  python -m coverage combine && python -m coverage report -m
 """
 
 import argparse
@@ -133,20 +149,27 @@ _NEAR_MISS_RE = re.compile(r"BPTRACE\s+(?:start|step)\b")
 _DECORATION = " \t>*_`#-+"
 
 # CommonMark-ish fences. The list-marker prefix matters: "- ```" opens a fence.
+# Both ends allow at most three leading spaces, as CommonMark does: a deeper
+# indent is content, so an indented ``` inside a quoted file body cannot end the
+# quotation.
 _FENCE_OPEN_RE = re.compile(
     r"^ {0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
-_FENCE_CLOSE_RE = re.compile(r"^\s*(?P<fence>`{3,}|~{3,})[ \t]*$")
+_FENCE_CLOSE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})[ \t]*$")
 
 
 def _fence_open(line: str):
-    """Return (char, length, info) when `line` opens a fenced block, else None."""
+    """Return (char, length) when `line` opens a fenced block, else None.
+
+    The info string is read only to rule out an inline code span; what it says
+    decides nothing, because a fence's own contents are literal.
+    """
     match = _FENCE_OPEN_RE.match(line)
     if not match:
         return None
     fence, info = match.group("fence"), match.group("info")
     if fence[0] == "`" and "`" in info:
         return None  # an inline code span, not a fence
-    return fence[0], len(fence), info.strip()
+    return fence[0], len(fence)
 
 
 def _fence_close(line: str):
@@ -161,23 +184,22 @@ def evidence_lines(text: str) -> Iterator[tuple[str, bool]]:
     """Yield (line, quoted) for every line of one assistant text block.
 
     quoted is True for lines inside a fenced block, an indented code block or an
-    HTML comment. A fence is only closed by a fence of the same character and at
-    least the same length that carries no info string; a fence with an info
-    string nests, so quoting a file whose own body contains ```json does not end
-    the quotation early. Fence state never crosses a block boundary.
+    HTML comment. Inside a fence, closing wins over opening: a bare fence of the
+    same character and at least the same length ends the block, exactly as
+    CommonMark says. Only a strictly longer fence nests, which is how one quotes
+    a file whose own body contains ```json -- an info string decides nothing, so
+    two ```python blocks in a row do not swallow the prose after them. Fence
+    state never crosses a block boundary.
     """
     fences: list[tuple[str, int]] = []
     in_comment = False
     for line in text.splitlines():
         if fences:
-            opener = _fence_open(line)
-            if opener and opener[2]:
-                fences.append((opener[0], opener[1]))
-            else:
-                closer = _fence_close(line)
-                if (closer and closer[0] == fences[-1][0]
-                        and closer[1] >= fences[-1][1]):
-                    fences.pop()
+            closer = _fence_close(line)
+            if closer and closer[0] == fences[-1][0] and closer[1] >= fences[-1][1]:
+                fences.pop()
+            elif (opener := _fence_open(line)) and opener[1] > fences[-1][1]:
+                fences.append(opener)
             yield line, True
         elif in_comment:
             in_comment = "-->" not in line
@@ -186,7 +208,7 @@ def evidence_lines(text: str) -> Iterator[tuple[str, bool]]:
             in_comment = "-->" not in line[line.index("<!--") + 4:]
             yield line, True
         elif (opener := _fence_open(line)):
-            fences.append((opener[0], opener[1]))
+            fences.append(opener)
             yield line, True
         elif line.startswith("    ") or line.startswith("\t"):
             yield line, True
@@ -274,6 +296,9 @@ class Run:
     platform: str
     events: list[Event] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Session identifiers the transcript recorded, when the platform writes any.
+    # Two files carrying the same one are two copies of one run.
+    session_ids: set[str] = field(default_factory=set)
 
     def _of(self, *kinds: str) -> list[Event]:
         return [e for e in self.events if e.kind in kinds]
@@ -307,11 +332,11 @@ class Run:
         return self._of(BASH)
 
 
-def finalize_run(path, platform: str, events: list[Event],
-                 warnings: list[str]) -> Run:
+def finalize_run(path, platform: str, events: list[Event], warnings: list[str],
+                 session_ids: Optional[Iterable[str]] = None) -> Run:
     """Wrap a parser's raw event list into a Run, numbering it once, in order."""
     run = Run(path=Path(path), platform=platform, events=list(events),
-              warnings=list(warnings))
+              warnings=list(warnings), session_ids=set(session_ids or ()))
     for seq, event in enumerate(run.events, 1):
         event.seq = seq
     return run
@@ -393,15 +418,24 @@ def _cc_subagent_index(main_path, warnings):
     return index
 
 
-def _cc_scan(path, origin, warnings):
+def _cc_scan(path, origin, warnings, session_ids=None):
     """Turn one CC jsonl file into events. Model text is the only marker evidence.
 
-    Events come back with seq=0; finalize_run numbers the merged stream.
+    Events come back with seq=0; finalize_run numbers the merged stream. When a
+    set is handed in, every `sessionId` the file records is added to it.
+
+    Only `type=text` blocks are read for markers. A `thinking` block is the
+    model's private reasoning, not its output -- it is the most common block
+    kind in a real transcript, and saying a marker there is not emitting it.
     """
     events = []
     for line_no, entry in _read_jsonl(path, warnings):
         if entry.get("type") != "assistant":
             continue
+        if session_ids is not None:
+            session_id = entry.get("sessionId")
+            if isinstance(session_id, str) and session_id:
+                session_ids.add(session_id)
         content = (entry.get("message") or {}).get("content")
         if not isinstance(content, list):
             continue
@@ -427,6 +461,12 @@ def _cc_splice(events, subagents, warnings, visited):
 
     CC records delegation trees deeper than one level, so the expansion has to
     recurse or those events are dropped.
+
+    The splice is also where a delegation with no recorded target gets one: CC
+    sometimes writes an Agent call without `subagent_type`, and the .meta.json
+    of the transcript it spawned knows the agent type anyway. Taking it from
+    there keeps `delegate:to=X` and `origin=subagent:X` reading the same source,
+    instead of one of them being unmatchable by construction.
     """
     merged = []
     for event in events:
@@ -440,6 +480,8 @@ def _cc_splice(events, subagents, warnings, visited):
                     f"no subagent transcript for {event.name} id={event.detail.get('id')}")
             continue
         sub_path, agent_type = found
+        if not event.detail.get("to") and agent_type != UNKNOWN_AGENT:
+            event.detail["to"] = agent_type
         key = sub_path.resolve()
         if key in visited:
             warnings.append(
@@ -458,10 +500,11 @@ def parse_cc_run(path) -> Run:
     if not path.is_file():
         raise TranscriptError(f"no such transcript: {path}")
     warnings: list[str] = []
+    session_ids: set[str] = set()
     subagents = _cc_subagent_index(path, warnings)
-    events = _cc_scan(path, MAIN, warnings)
+    events = _cc_scan(path, MAIN, warnings, session_ids)
     events = _cc_splice(events, subagents, warnings, {path.resolve()})
-    return finalize_run(path, "cc", events, warnings)
+    return finalize_run(path, "cc", events, warnings, session_ids)
 
 
 def cc_project_dir(repo_path) -> Path:
@@ -521,9 +564,26 @@ class Discovery:
         return max(0, self.requested - len(self.runs))
 
     @property
+    def duplicates(self) -> list[str]:
+        """Runs in the sample that are really the same recorded session.
+
+        Distinct files can still be one run: a copy, a re-export, the same
+        session under two names. Counting them separately is how a sample of
+        one is reported as "3 of 3".
+        """
+        by_session: dict[str, list[str]] = {}
+        for run in self.runs:
+            for session_id in sorted(run.session_ids):
+                by_session.setdefault(session_id, []).append(run.path.name)
+        return [f"{', '.join(names)} all record session {session_id}, so they "
+                f"are one run, not {len(names)}"
+                for session_id, names in sorted(by_session.items()) if len(names) > 1]
+
+    @property
     def gaps(self) -> list[str]:
         """Every reason the sample may not be the evidence that was asked for."""
         notes = [f"excluded {e.path.name}: {e.reason}" for e in self.excluded]
+        notes.extend(self.duplicates)
         if self.shortfall:
             notes.append(f"asked for {self.requested} run(s) but only "
                          f"{len(self.runs)} could be measured")
@@ -556,7 +616,22 @@ def _newest_first(paths, found: Discovery) -> list[tuple[float, Path]]:
 
 
 def load_runs(paths, parse: Callable[[Path], Run]) -> Discovery:
-    """Parse exactly the transcripts the caller named. Nothing is filtered out."""
+    """Parse exactly the transcripts the caller named. Nothing is filtered out.
+
+    The one thing that is checked first is that they are N different files:
+    `a.jsonl ./a.jsonl /abs/a.jsonl` is one run spelled three ways, and letting
+    it report "3/3 run(s) PASS" would satisfy a "3 runs out of 3" criterion with
+    a single run. Sameness is decided on the resolved path, so symlinks and
+    `..` cannot spell a repeat past it either.
+    """
+    seen: dict[Path, str] = {}
+    for path in paths:
+        resolved = Path(path).resolve()
+        if resolved in seen:
+            raise UsageError(
+                f"{path} and {seen[resolved]} are the same transcript ({resolved}); "
+                f"N runs means N different transcripts")
+        seen[resolved] = str(path)
     found = Discovery(requested=len(paths), explicit=True)
     for path in paths:
         try:
@@ -745,17 +820,28 @@ def _nearby(run: Run, expectation: Expectation) -> str:
 
 
 def evaluate(run: Run, ordered, counted, allow_anomalies: bool = False) -> Result:
-    """Judge a parsed run. Ordered expectations must match in sequence."""
+    """Judge a parsed run against the expectations it was given, and nothing else.
+
+    There is deliberately no built-in "a good run looks like this": how many
+    start markers a measurement wants is the measurement's business, expressed
+    as --expect-count 'start=1'. A check about something else entirely, say
+    --expect-count 'bash:contains=make=1', must not be failed by a BPTRACE rule
+    it never asked for.
+
+    An anomaly is damage to the evidence itself, not a verdict.
+    """
     failures: list[str] = []
     anomalies: list[str] = []
 
-    starts = len(run.start_markers)
-    if starts != 1:
-        anomalies.append(
-            f"{starts} start marker(s) found (exactly 1 expected for a well-formed run)")
     for marker in run.malformed_markers:
         anomalies.append(f"malformed BPTRACE line at {marker.describe()}")
+    # Quoting a marker is only suspicious when nothing of that kind was ever
+    # really emitted: "here is the line I am about to print", followed by
+    # printing it, is what a well-behaved run looks like.
+    emitted = {event.kind for event in run.events}
     for marker in run.quoted_markers:
+        if marker.detail.get("as") in emitted:
+            continue
         anomalies.append(
             f"BPTRACE marker only appears inside quoted text, so it is not "
             f"evidence: {marker.describe()}")
@@ -813,7 +899,7 @@ def _run_dict(result: Result) -> dict:
                     "line": e.line, "source": e.source, "detail": e.detail}
                    for e in run.events],
         "checked": result.checked,
-        "passed": result.passed,
+        "passed": result.passed if result.checked else None,
         "failures": result.failures,
         "anomalies": result.anomalies,
     }
@@ -882,7 +968,8 @@ def build_parser() -> argparse.ArgumentParser:
                                               "from --repo / the current directory)")
     parser.add_argument("--repo", help="repository the transcripts belong to (default: .)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="print the selection and its exclusions, then stop")
+                        help="print the selection and its exclusions, then stop; "
+                             "refused together with any expectation")
     parser.add_argument("--platform", default="cc", choices=sorted(PLATFORMS),
                         help="transcript format (default: cc)")
     parser.add_argument("--expect", "--expect-marker", action="append", default=[],
@@ -928,10 +1015,26 @@ def _run(args) -> int:
     if args.expect_delegations is not None:
         counted.append(parse_count_expectation(f"delegate={args.expect_delegations}"))
     checked = is_checked(ordered, counted)
+    if args.dry_run and checked:
+        # Silently dropping the expectations would turn "I forgot to delete
+        # --dry-run" into an unconditional exit 0 that judged nothing.
+        raise UsageError(
+            "--dry-run lists the selection and stops; it never judges it. Give "
+            "--expect/--expect-count/--expect-delegations or --dry-run, not both")
 
     found = _discover(args, platform)
     if args.dry_run:
-        print_discovery(found, sys.stdout)
+        if args.json:
+            json.dump({"passed": None, "checked": False, "dry_run": True,
+                       "requested": found.requested, "missing": found.shortfall,
+                       "selected": [str(r.path) for r in found.runs],
+                       "excluded": [{"path": str(e.path), "reason": e.reason}
+                                    for e in found.excluded],
+                       "gaps": [], "runs": []},
+                      sys.stdout, indent=2, ensure_ascii=False)
+            print()
+        else:
+            print_discovery(found, sys.stdout)
         return 0
     if not checked and found.explicit and found.excluded:
         # Nothing to judge and the named file could not be read: an IO error.
@@ -944,7 +1047,11 @@ def _run(args) -> int:
     passed = all(r.passed for r in results) and not gaps
 
     if args.json:
-        json.dump({"passed": passed, "checked": checked, "requested": found.requested,
+        # No expectation, no verdict: `true` here would read as "it was checked
+        # and it was fine", which is exactly the mistake a forgotten --expect
+        # makes. The exit code stays 0 -- reporting is a legitimate use.
+        json.dump({"passed": passed if checked else None,
+                   "checked": checked, "requested": found.requested,
                    "missing": found.shortfall,
                    "selected": [str(r.path) for r in found.runs],
                    "excluded": [{"path": str(e.path), "reason": e.reason}
