@@ -268,9 +268,9 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 # State
 
 <!-- rn:state -->
-- **Status**: paused
-- **Date**: 2026-07-27
-- **Last completed**: #1 の Step 2（`scripts/check_transcript.py` の作成）。コミット `a4d6fc0` → `47561ed` → `0afffc5`
-- **Next**: #1 の「3ラウンド目の修正を検証し、レビューを1巡させる」→ その後コールドセッション3回の実測
-- **Notes**: ブランチ `feature/blackpink-setlist-planner`（push 済み）。**`44e093d` は未検証・未レビューの wip コミット** — 3巡目のレビューが挙げた12件の修正がワーキングツリーに入った状態で中断されたもの。テストは 206 passed / 1 skipped で緑、スポット確認で「重複パス拒否・`--dry-run`＋期待値拒否・report-only の `passed=null`・インデント閉じフェンス・start数ハードコード除去」の5件は成立を確認したが、残り7件（info付き連続フェンスの誤FAIL、本物マーカーがあるのに `marker_quoted` で FAIL、`subagent_type` 欠落時の `to` フォールバック、`thinking` ブロックのテスト固定、リスト項目内フェンスのテスト交絡、`.coveragerc` の再現手順、フィクスチャ説明の訂正）は未確認。**再開時はまずこの12件を検証し、QA/Craft/Verification のレビューを1巡させてから実測へ進むこと。** レビュー反復は上限3回に到達済みなので、残件が critical なら実測前にユーザーへエスカレーションする。測定はユーザー操作のコールドセッションでのみ行う（このセッション内で `/techtest` を起動しない）。判定コマンドは2段階（`--dry-run` で候補確認 → パス明示で判定）。
+- **Status**: not suspended
+- **Date**: YYYY-MM-DD
+- **Last completed**: #N description
+- **Next**: #N description
+- **Notes**: bounded forward pointer — branch/PR, next concrete action, open blockers, user-deferred paths, open questions / pending decisions not yet captured in `design.md`; not a re-narration of the session (that lives in `git log`)
 <!-- rn:state-end -->
