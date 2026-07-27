@@ -27,7 +27,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - 1 task = 1 commit
 - 推測せず事実ベースで判断する（不確かな点は「未確認」と明記する）
 - 測定は必ずユーザー操作のコールドセッションで行う（このセッション内で `/bp` を起動して測定してはいけない）
-- 測定後の transcript ID はユーザーに聞かない。`scripts/verify-run.py --latest N` で自動検索する
+- 測定後の transcript ID はユーザーに聞かない。`scripts/check_transcript.py --latest N` で自動検索する。ただし判定は「①`--latest`/`--since`/`--dry-run` で候補を確認 → ②確定したパスを明示指定して判定」の2段階で行う（`--latest` 単独に判定を委ねない）
 - filter-songs.sh の証拠ログ `/tmp/bp-filter.log` はリセットしない（貯めっぱなし運用・時間窓で切り分け）
 - 1変数ずつ変えて再測定する（ビッグバン検証は行わない）
 - GHC transcript は最終OUT生成ターンを欠く → 画面出力も証拠として保存する
@@ -46,7 +46,8 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 **Steps**:
 
 - [x] CC用の最小検証コマンド（1WF・2ステップ：Step1は非委譲・Step2は委譲）とサブエージェント1つを作成する（`/techtest`）
-- [ ] 最小チェックスクリプト（`scripts/check-transcript.py` 等）を作成する。CC transcript を読み、`BPTRACE start`／`BPTRACE step=<n> out actor=<...>` 行と Agent tool_use 呼び出し回数を機械的に抽出・報告する（bp非依存、汎用。目視・都度のワンライナーで確認しない）
+- [x] 最小チェックスクリプト（`scripts/check_transcript.py`）を作成する。CC transcript を読み、`BPTRACE start`／`BPTRACE step=<n> out actor=<...>` 行と Agent tool_use 呼び出し回数を機械的に抽出・報告する（bp非依存、汎用。目視・都度のワンライナーで確認しない）
+- [ ] 3ラウンド目の修正（偽PASS/偽FAIL 12件）を検証し、レビューを1巡させる。**修正はワーキングツリーに存在するがコミット・検証・レビューとも未了**（詳細は State → Notes）
 - [ ] CC: コールドセッションで3回実行し、チェックスクリプトで `BPTRACE start`・Step1（非委譲・actor=main）・Step2（委譲・actor=techtest-echo）が3/3で正しく成立するか確認する
 - [ ] 3/3で安定しなければ、指示文を1変数ずつ修正し再測定する
 - [ ] 安定したパターンを GHC へ変換し、GHC でも同様に3回、チェックスクリプト（GHC transcript 対応を追加）で確認する
@@ -71,6 +72,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 
 **Steps**:
 
+- [ ] 実測後、`origin=subagent:*` を含む実データ由来の匿名化フィクスチャを `scripts/testdata/` に追加する（task #1 時点では実ランが無く合成フィクスチャのみで担保していたため）
 - [ ] チェックスクリプトを拡張する: ルーティング（該当WFを読んだか）・OUT形（想定フィールドの有無）の判定を追加する（bp固有のロジックはここで初めて入る）
 - [ ] `/bp` コマンド・1つの WF（`songs.json`/`members.json`/`filter-songs.sh` を使い、テーマから楽曲選定→並び替え→演出プラン生成まで一気通貫、サブエージェントなし）を実装する。task #1 で確定したマーカーパターンを適用する
 - [ ] CC でコールドセッションで複数回実測し、チェックスクリプトで安定を確認する
@@ -255,12 +257,20 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - **Evidence**: 本会話でのユーザー指摘
 - **Sources**: 本会話
 
+## D-9: チェックスクリプトの判定原則（2026-07-27）
+
+- **Issue**: task #1 のチェックスクリプトに対する3巡の敵対的レビューで、「実際には成立していない実行を PASS と判定する」経路が**毎回新しく**見つかった。過去の事故（リソースファイル読込テキストの混入）と同型の欠陥が、混入元を変えて繰り返し出現した
+- **Conclusion**: 次の原則をスクリプトの不変条件として確立した。(1) **選別は verdict を見ない** — 「start マーカーの有無」で候補を絞ると、まさに捕まえるべきラン（モデルが出し忘れたラン）が落ち、古いランで静かに埋められる。除外した候補は必ず理由つきで報告し、期待値がある場合は除外・欠落があれば FAIL。(2) **判定は2段階** — 発見（`--latest`/`--since`/`--dry-run`）で候補を確認し、確定したパスを明示指定して判定する。(3) **証拠はモデルが生成したプレーンテキストのみ** — `type=text` ブロックに限り、フェンス／4スペースインデント／HTMLコメント区間は除外する。除外した正規形マーカーは `marker_quoted` として記録し、黙殺しない。(4) **origin を判定に含める** — 「サブエージェント自身がマーカーを出した」と「親がサブの出力を自分のメッセージに転記した」を区別する。(5) **near-miss を捨てない** — 書式を外したマーカーは最も情報量の多い失敗なので `marker_malformed` として記録する
+- **Rationale**: 判定手段が信用できないまま測定に進むことがこのプロジェクト最大の失敗パターン（D-5・D-7）。カバレッジ100%でも critical な偽 PASS が3回とも素通りしたため、カバレッジは品質指標として採用しない
+- **Evidence**: 3巡のレビューで QA・Craft・Verification が独立に再現。最終ラウンドでレビュアーが別実装を書いて実データ33 transcript を再抽出した結果、イベント種別・origin・行番号・順序が完全一致（差分0）、origin は meta の `agentType` と1600/1600 一致、subagent transcript は44/44 が正しい位置に統合
+- **Sources**: 本会話、コミット `a4d6fc0` → `47561ed` → `0afffc5`
+
 # State
 
 <!-- rn:state -->
-- **Status**: not suspended
-- **Date**: YYYY-MM-DD
-- **Last completed**: #N description
-- **Next**: #N description
-- **Notes**: bounded forward pointer — branch/PR, next concrete action, open blockers, user-deferred paths, open questions / pending decisions not yet captured in `design.md`; not a re-narration of the session (that lives in `git log`)
+- **Status**: paused
+- **Date**: 2026-07-27
+- **Last completed**: #1 の Step 2（`scripts/check_transcript.py` の作成）。コミット `a4d6fc0` → `47561ed` → `0afffc5`
+- **Next**: #1 の「3ラウンド目の修正を検証し、レビューを1巡させる」→ その後コールドセッション3回の実測
+- **Notes**: ブランチ `feature/blackpink-setlist-planner`（push 済み）。**`44e093d` は未検証・未レビューの wip コミット** — 3巡目のレビューが挙げた12件の修正がワーキングツリーに入った状態で中断されたもの。テストは 206 passed / 1 skipped で緑、スポット確認で「重複パス拒否・`--dry-run`＋期待値拒否・report-only の `passed=null`・インデント閉じフェンス・start数ハードコード除去」の5件は成立を確認したが、残り7件（info付き連続フェンスの誤FAIL、本物マーカーがあるのに `marker_quoted` で FAIL、`subagent_type` 欠落時の `to` フォールバック、`thinking` ブロックのテスト固定、リスト項目内フェンスのテスト交絡、`.coveragerc` の再現手順、フィクスチャ説明の訂正）は未確認。**再開時はまずこの12件を検証し、QA/Craft/Verification のレビューを1巡させてから実測へ進むこと。** レビュー反復は上限3回に到達済みなので、残件が critical なら実測前にユーザーへエスカレーションする。測定はユーザー操作のコールドセッションでのみ行う（このセッション内で `/techtest` を起動しない）。判定コマンドは2段階（`--dry-run` で候補確認 → パス明示で判定）。
 <!-- rn:state-end -->
