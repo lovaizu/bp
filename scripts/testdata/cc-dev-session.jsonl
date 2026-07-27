@@ -6,3 +6,6 @@
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Rewrote 7.3: the marker format is now `BPTRACE start theme=\"...\" wf=...` plus the step lines."}]}}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Here is what the workflow now emits:\n\n```\nBPTRACE start theme=\"neon night\" wf=techtest.md\nBPTRACE step=1 out actor=main\nBPTRACE step=2 out actor=techtest-echo\n```\n\nThat covers both steps."}]}}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "And in a tilde fence:\n\n~~~text\nBPTRACE step=3 out actor=main\n~~~\n\nDone."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The indented form of the example reads:\n\n    BPTRACE start theme=\"neon night\" wf=techtest.md\n    BPTRACE step=1 out actor=main\n\nwhich is still only a quotation."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Checklist:\n\n- the workflow must print\n  - ```\n    BPTRACE step=2 out actor=techtest-echo\n    ```\n- and nothing else\n"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "BPTRACEマーカーは、この誤判定を防ぐための**固定トークン**です。\n- `BPTRACE` マーカーが正しく出力されるか\n"}]}}

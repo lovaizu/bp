@@ -1,41 +1,53 @@
 #!/usr/bin/env python3
-"""Extract BPTRACE markers and tool calls from an agent transcript and check them.
+r"""Extract BPTRACE markers and tool calls from an agent transcript and check them.
 
 Platform-agnostic by design: the parser layer turns a transcript into an ordered
 Event stream whose kinds (delegate / bash / tool / marker_*) carry the meaning,
 and the expectation layer judges that stream without knowing which platform
-produced it or what its tools are called. A second platform plugs in by adding
-one entry to PLATFORMS. No project-specific expectation is baked in -- callers
-pass what they expect on the command line.
+produced it or what its tools are called. A second platform is one entry in
+PLATFORMS: a parser, a project-directory resolver and a file listing.
 
 Only text the model itself produced is treated as marker evidence: assistant
-`type=text` content blocks, whole-line matches, outside fenced code blocks.
-Markers appearing in tool results, tool inputs, file contents, prose or
-quotations are deliberately ignored. A line that tried to be a marker but
-missed the format is recorded as `marker_malformed` and reported -- never
-silently dropped, because a near-miss is the most informative failure there is.
+`type=text` content blocks, whole-line matches, outside fenced code blocks,
+indented code blocks and HTML comments. A well-formed marker found in one of
+those quoted regions becomes a `marker_quoted` event -- not evidence, but not
+lost either. A line that tried to be a marker and missed the format becomes a
+`marker_malformed` event.
 
 Usage:
-  check_transcript.py <transcript.jsonl> [checks...]
-  check_transcript.py --latest N [--theme T] [--since ISO] [--project-dir DIR] [checks...]
+  check_transcript.py RUN.jsonl [RUN.jsonl ...] [checks...]
+  check_transcript.py --latest N [discovery options] [checks...]
 
-Selecting runs:
-  --latest N                the newest N transcripts in the project directory
-  --theme TEXT              only runs whose `BPTRACE start` theme equals TEXT
-  --since ISO8601           only transcripts modified at or after that moment
-  --project-dir DIR         where to look (default: derived from --repo)
-  --repo PATH               repository the transcripts belong to (default: .)
+Judging named runs and finding candidate runs are two separate steps:
 
-  Selection never consults the verdict. Filtering on "has a start marker"
-  would drop exactly the runs worth catching -- the ones where the model never
-  emitted one -- and quietly backfill the sample with older runs. Scope a
-  measurement with --theme (design doc 7.3) and/or --since instead.
+  1. See what is there, and why anything was passed over:
+       check_transcript.py --latest 5 --since 2026-07-27T09:00:00 --dry-run
+  2. Judge the runs you decided are the measurement, by path:
+       check_transcript.py a.jsonl b.jsonl c.jsonl --expect 'start:theme=neon night'
+
+  Every transcript named on the command line is judged. One that cannot be read
+  is a failure, never a smaller sample.
+
+Discovery options (--latest only):
+  --since ISO8601    window: only transcripts modified at or after this moment
+  --theme TEXT       keep only runs whose `BPTRACE start` theme equals TEXT
+  --project-dir DIR  where to look (default: derived from --repo)
+  --repo PATH        repository the transcripts belong to (default: .)
+  --dry-run          print the selection and stop, without judging anything
+
+  Every candidate inside the --since window that does not end up in the sample
+  is listed with the reason it was left out. When expectations were given, an
+  exclusion, an unreadable candidate or a shortfall is a FAIL on its own.
+  --theme has to parse a run before it can see its theme, so a run that emitted
+  no start marker is excluded *and reported* -- it never disappears in favour of
+  an older run that happens to match.
 
 Checks:
   --expect SPEC             ordered: SPEC must match at least once, in this order
   --expect-count SPEC=N     SPEC must match exactly N times
   --expect-delegations N    shorthand for --expect-count delegate=N
-  --allow-anomalies         tolerate damaged evidence instead of failing on it
+  --allow-anomalies         tolerate damaged evidence inside a run; it never
+                            excuses a gap in the sample itself
 
 SPEC syntax: <selector>[:<key>=<value>[,<key>=<value>]...]
   start                     the "BPTRACE start" line      keys: theme, wf
@@ -44,20 +56,18 @@ SPEC syntax: <selector>[:<key>=<value>[,<key>=<value>]...]
   bash                      a shell invocation            keys: contains (substring)
 
   Every selector also accepts `origin`, matched exactly: "main" for the parent
-  agent, "subagent:<agent type>" for a delegated one. That is what separates
-  "the subagent emitted this marker itself" from "the parent copied the
-  subagent's output into its own message".
+  agent, "subagent:<agent type>" for a delegated one.
 
-  Values are compared exactly (except `contains`) and may not contain a comma.
-  --expect-count splits at the LAST '=' in the argument: everything to its left
-  is the SPEC, everything to its right is the count. So
-  'bash:contains=a=b=2' means "exactly 2 bash calls whose command contains
-  'a=b'". A count must be a plain non-negative decimal number.
+  Values are compared exactly, except `contains`, which is a substring test and
+  may not be empty. A comma ends a value: write \, for a literal comma and \\
+  for a literal backslash. --expect-count splits at the LAST '=' in the
+  argument, so 'bash:contains=a=b=2' means "exactly 2 bash calls whose command
+  contains 'a=b'". A count must be a plain non-negative decimal number.
 
-Example -- the techtest stage-B invariant. This is BLACKPINK/techtest specific,
-so it lives here as a usage example and not in the code:
+Example -- the techtest stage-B invariant, kept here as an example because it is
+BLACKPINK specific and the code is not:
 
-  check_transcript.py --latest 3 --theme 'neon night' \
+  check_transcript.py run.jsonl \
       --expect 'start:theme=neon night,wf=techtest.md' \
       --expect 'step=1:actor=main,origin=main' \
       --expect 'delegate:to=techtest-echo' \
@@ -65,46 +75,36 @@ so it lives here as a usage example and not in the code:
       --expect-count 'start=1' \
       --expect-count 'delegate=1'
 
-  The ordered expectations pin the delegation *between* step 1 and step 2, and
-  'delegate=1' pins it to exactly one -- so a delegation at step 1 is ruled out
-  by order and count together, and step 2's marker only counts when the
-  subagent itself emitted it.
-
 Exit codes: 0 = PASS (or report-only), 1 = FAIL, 2 = usage/IO/internal error.
 """
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Iterable, Iterator, Optional
 
 # Event kinds. The parser normalises to these; the judging layer sees only them.
 MARKER_START = "marker_start"
 MARKER_STEP = "marker_step"
 MARKER_MALFORMED = "marker_malformed"
+MARKER_QUOTED = "marker_quoted"
 DELEGATE = "delegate"
 BASH = "bash"
 TOOL = "tool"
 TOOL_KINDS = (DELEGATE, BASH, TOOL)
 
-# Agent types and workflow file names, kept tight so that stray punctuation
-# (a trailing period, a bold marker's '**') fails the match instead of being
-# swallowed into the captured value.
-_ACTOR = r"[A-Za-z0-9_-]+"
-_WF = r"[A-Za-z0-9_./-]+"
-MARKER_START_RE = re.compile(
-    rf'^BPTRACE\s+start\s+theme="(?P<theme>[^"]*)"\s+wf=(?P<wf>{_WF})$')
-MARKER_STEP_RE = re.compile(
-    rf"^BPTRACE\s+step=(?P<step>\d+)\s+out\s+actor=(?P<actor>{_ACTOR})$")
-# "This line meant to be a marker": the token on its own, after any decoration.
-_BPTRACE_RE = re.compile(r"BPTRACE(?![A-Za-z0-9_])")
-_DECORATION = " \t>*_`#-+"
-_FENCE_RE = re.compile(r"^(?P<fence>`{3,}|~{3,})")
-
 MAIN = "main"
+UNKNOWN_AGENT = "<unknown>"  # cannot collide with a real agent type
+
+# How many entries a category list prints before it asks for --verbose.
+LIST_LIMIT = 10
+# How much of one event's description is printed before it is cut short.
+DESCRIBE_LIMIT = 160
 
 
 class TranscriptError(Exception):
@@ -116,32 +116,151 @@ class UsageError(Exception):
 
 
 # --------------------------------------------------------------------------- #
+# BPTRACE marker grammar (shared by every platform parser)
+# --------------------------------------------------------------------------- #
+# Agent types and workflow file names are ASCII only, so stray punctuation (a
+# trailing period, a bold marker's '**') fails the match instead of being
+# swallowed into the captured value.
+_ACTOR = r"[A-Za-z0-9_-]+"
+_WF = r"[A-Za-z0-9_./-]+"
+MARKER_START_RE = re.compile(
+    rf'^BPTRACE\s+start\s+theme="(?P<theme>[^"]*)"\s+wf=(?P<wf>{_WF})$')
+MARKER_STEP_RE = re.compile(
+    rf"^BPTRACE\s+step=(?P<step>[0-9]+)\s+out\s+actor=(?P<actor>{_ACTOR})$")
+# A near miss is a line that tried to write a marker, not one that mentions the
+# token. "BPTRACEマーカーは..." and "`BPTRACE` について" are prose, not failures.
+_NEAR_MISS_RE = re.compile(r"BPTRACE\s+(?:start|step)\b")
+_DECORATION = " \t>*_`#-+"
+
+# CommonMark-ish fences. The list-marker prefix matters: "- ```" opens a fence.
+_FENCE_OPEN_RE = re.compile(
+    r"^ {0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_FENCE_CLOSE_RE = re.compile(r"^\s*(?P<fence>`{3,}|~{3,})[ \t]*$")
+
+
+def _fence_open(line: str):
+    """Return (char, length, info) when `line` opens a fenced block, else None."""
+    match = _FENCE_OPEN_RE.match(line)
+    if not match:
+        return None
+    fence, info = match.group("fence"), match.group("info")
+    if fence[0] == "`" and "`" in info:
+        return None  # an inline code span, not a fence
+    return fence[0], len(fence), info.strip()
+
+
+def _fence_close(line: str):
+    """Return (char, length) when `line` could close a fenced block, else None."""
+    match = _FENCE_CLOSE_RE.match(line)
+    if not match:
+        return None
+    return match.group("fence")[0], len(match.group("fence"))
+
+
+def evidence_lines(text: str) -> Iterator[tuple[str, bool]]:
+    """Yield (line, quoted) for every line of one assistant text block.
+
+    quoted is True for lines inside a fenced block, an indented code block or an
+    HTML comment. A fence is only closed by a fence of the same character and at
+    least the same length that carries no info string; a fence with an info
+    string nests, so quoting a file whose own body contains ```json does not end
+    the quotation early. Fence state never crosses a block boundary.
+    """
+    fences: list[tuple[str, int]] = []
+    in_comment = False
+    for line in text.splitlines():
+        if fences:
+            opener = _fence_open(line)
+            if opener and opener[2]:
+                fences.append((opener[0], opener[1]))
+            else:
+                closer = _fence_close(line)
+                if (closer and closer[0] == fences[-1][0]
+                        and closer[1] >= fences[-1][1]):
+                    fences.pop()
+            yield line, True
+        elif in_comment:
+            in_comment = "-->" not in line
+            yield line, True
+        elif line.lstrip().startswith("<!--"):
+            in_comment = "-->" not in line[line.index("<!--") + 4:]
+            yield line, True
+        elif (opener := _fence_open(line)):
+            fences.append((opener[0], opener[1]))
+            yield line, True
+        elif line.startswith("    ") or line.startswith("\t"):
+            yield line, True
+        else:
+            yield line, False
+
+
+def marker_from_line(line: str):
+    """Return (kind, detail) for a line that is -- or tried to be -- a marker."""
+    stripped = line.strip()
+    match = MARKER_START_RE.match(stripped)
+    if match:
+        return MARKER_START, match.groupdict()
+    match = MARKER_STEP_RE.match(stripped)
+    if match:
+        return MARKER_STEP, match.groupdict()
+    if _NEAR_MISS_RE.match(stripped.lstrip(_DECORATION)):
+        return MARKER_MALFORMED, {"text": stripped}
+    return None
+
+
+def markers_in_text(text: str) -> Iterator[tuple[str, dict[str, str]]]:
+    """Yield (kind, detail) for every marker-ish line of an assistant text block.
+
+    A well-formed marker inside quoted text is downgraded to MARKER_QUOTED
+    rather than dropped: "not evidence" and "never happened" are different
+    findings. A near miss inside quoted text is only noise, so it is dropped.
+    """
+    for line, quoted in evidence_lines(text):
+        found = marker_from_line(line)
+        if not found:
+            continue
+        kind, detail = found
+        if not quoted:
+            yield kind, detail
+        elif kind in (MARKER_START, MARKER_STEP):
+            yield MARKER_QUOTED, {"text": line.strip(), "as": kind}
+
+
+# --------------------------------------------------------------------------- #
 # Model
 # --------------------------------------------------------------------------- #
+def _oneline(value: str, limit: int = DESCRIBE_LIMIT) -> str:
+    """Collapse a possibly multi-line value onto one bounded line."""
+    flat = value.replace("\r\n", "\n").replace("\n", "⏎").replace("\t", " ")
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
 @dataclass
 class Event:
     """One observable thing that happened, in execution order."""
 
     seq: int
     kind: str  # one of the kind constants above
-    origin: str  # "main" or "subagent:<name>"
+    origin: str  # "main" or "subagent:<agent type>"
     source: str  # file the event was read from
     line: int
     name: str = ""  # platform tool name -- display only, never judged on
-    detail: dict = field(default_factory=dict)
+    detail: dict[str, str] = field(default_factory=dict)
 
-    def describe(self):
+    def describe(self) -> str:
         where = f"{self.origin} {Path(self.source).name}:{self.line}"
         if self.kind == MARKER_START:
             body = 'BPTRACE start theme="{theme}" wf={wf}'.format(**self.detail)
         elif self.kind == MARKER_STEP:
             body = "BPTRACE step={step} out actor={actor}".format(**self.detail)
         elif self.kind == MARKER_MALFORMED:
-            body = f"malformed BPTRACE line: {self.detail.get('text', '')!r}"
+            body = f"malformed BPTRACE line: {_oneline(self.detail.get('text', ''))!r}"
+        elif self.kind == MARKER_QUOTED:
+            body = f"quoted BPTRACE line: {_oneline(self.detail.get('text', ''))!r}"
         elif self.kind == DELEGATE:
             body = f"delegate -> {self.detail.get('to') or '?'}"
         elif self.kind == BASH:
-            body = f"bash: {self.detail.get('command', '')}"
+            body = f"bash: {_oneline(self.detail.get('command', ''))}"
         else:
             body = f"tool: {self.name}"
         return f"[{where}] {body}"
@@ -153,35 +272,49 @@ class Run:
 
     path: Path
     platform: str
-    events: list = field(default_factory=list)
-    warnings: list = field(default_factory=list)
+    events: list[Event] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
-    def _of(self, *kinds):
+    def _of(self, *kinds: str) -> list[Event]:
         return [e for e in self.events if e.kind in kinds]
 
     @property
-    def start_markers(self):
+    def start_markers(self) -> list[Event]:
         return self._of(MARKER_START)
 
     @property
-    def step_markers(self):
+    def step_markers(self) -> list[Event]:
         return self._of(MARKER_STEP)
 
     @property
-    def malformed_markers(self):
+    def malformed_markers(self) -> list[Event]:
         return self._of(MARKER_MALFORMED)
 
     @property
-    def tool_uses(self):
+    def quoted_markers(self) -> list[Event]:
+        return self._of(MARKER_QUOTED)
+
+    @property
+    def tool_uses(self) -> list[Event]:
         return self._of(*TOOL_KINDS)
 
     @property
-    def delegations(self):
+    def delegations(self) -> list[Event]:
         return self._of(DELEGATE)
 
     @property
-    def bash_calls(self):
+    def bash_calls(self) -> list[Event]:
         return self._of(BASH)
+
+
+def finalize_run(path, platform: str, events: list[Event],
+                 warnings: list[str]) -> Run:
+    """Wrap a parser's raw event list into a Run, numbering it once, in order."""
+    run = Run(path=Path(path), platform=platform, events=list(events),
+              warnings=list(warnings))
+    for seq, event in enumerate(run.events, 1):
+        event.seq = seq
+    return run
 
 
 # --------------------------------------------------------------------------- #
@@ -205,44 +338,6 @@ def _read_jsonl(path, warnings):
                     warnings.append(f"{path.name}: line {line_no} is not valid JSON ({exc.msg})")
     except OSError as exc:
         raise TranscriptError(f"cannot read {path}: {exc}") from exc
-
-
-def _evidence_lines(text):
-    """Yield the lines of an assistant text block that count as model output.
-
-    Lines inside a fenced code block are quotation -- the model showing what a
-    workflow says, not the model running it -- so they are skipped. The fence
-    state is carried across the whole block and reset between blocks, which is
-    what lets a marker printed *after* a fenced JSON dump still count.
-    """
-    fence = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        opener = _FENCE_RE.match(stripped)
-        if fence is None:
-            if opener:
-                fence = opener.group("fence")
-            else:
-                yield line
-        elif (opener and opener.group("fence")[0] == fence[0]
-              and len(opener.group("fence")) >= len(fence)
-              and not stripped[len(opener.group("fence")):].strip()):
-            fence = None
-
-
-def _marker_from_line(line):
-    """Return (kind, detail) for a line that is -- or tried to be -- a marker."""
-    stripped = line.strip()
-    probe = stripped.lstrip(_DECORATION)
-    if not _BPTRACE_RE.match(probe):
-        return None
-    match = MARKER_START_RE.match(stripped)
-    if match:
-        return MARKER_START, match.groupdict()
-    match = MARKER_STEP_RE.match(stripped)
-    if match:
-        return MARKER_STEP, match.groupdict()
-    return MARKER_MALFORMED, {"text": stripped}
 
 
 def _cc_tool_event(name, tool_input):
@@ -288,15 +383,20 @@ def _cc_subagent_index(main_path, warnings):
         if not transcript.exists():
             warnings.append(f"{meta_path.name}: no transcript {transcript.name} beside it")
             continue
-        index[tool_use_id] = (transcript, meta.get("agentType") or "subagent")
+        agent_type = meta.get("agentType")
+        if not isinstance(agent_type, str) or not agent_type:
+            agent_type = UNKNOWN_AGENT
+            warnings.append(
+                f"{meta_path.name}: no agentType, so its events are attributed to "
+                f"origin subagent:{UNKNOWN_AGENT}")
+        index[tool_use_id] = (transcript, agent_type)
     return index
 
 
 def _cc_scan(path, origin, warnings):
     """Turn one CC jsonl file into events. Model text is the only marker evidence.
 
-    Events come back with seq=0; the caller numbers them once the merged stream
-    (parent + spliced subagents) is assembled.
+    Events come back with seq=0; finalize_run numbers the merged stream.
     """
     events = []
     for line_no, entry in _read_jsonl(path, warnings):
@@ -309,12 +409,9 @@ def _cc_scan(path, origin, warnings):
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "text":
-                for text_line in _evidence_lines(block.get("text") or ""):
-                    found = _marker_from_line(text_line)
-                    if found:
-                        kind, detail = found
-                        events.append(Event(0, kind, origin, str(path), line_no,
-                                            detail=detail))
+                for kind, detail in markers_in_text(block.get("text") or ""):
+                    events.append(Event(0, kind, origin, str(path), line_no,
+                                        detail=detail))
             elif block.get("type") == "tool_use":
                 name = block.get("name") or ""
                 tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
@@ -328,9 +425,8 @@ def _cc_scan(path, origin, warnings):
 def _cc_splice(events, subagents, warnings, visited):
     """Insert each delegated transcript at its delegation point, recursively.
 
-    The design doc assumes one flat level of delegation, but CC does record
-    deeper trees. Expanding them recursively is the difference between seeing
-    those events and dropping them without a word.
+    CC records delegation trees deeper than one level, so the expansion has to
+    recurse or those events are dropped.
     """
     merged = []
     for event in events:
@@ -356,21 +452,19 @@ def _cc_splice(events, subagents, warnings, visited):
     return merged
 
 
-def parse_cc_run(path):
+def parse_cc_run(path) -> Run:
     """Parse a Claude Code transcript, splicing subagent transcripts in place."""
     path = Path(path)
     if not path.is_file():
         raise TranscriptError(f"no such transcript: {path}")
-    run = Run(path=path, platform="cc")
-    subagents = _cc_subagent_index(path, run.warnings)
-    events = _cc_scan(path, MAIN, run.warnings)
-    run.events = _cc_splice(events, subagents, run.warnings, {path.resolve()})
-    for seq, event in enumerate(run.events, 1):
-        event.seq = seq
-    return run
+    warnings: list[str] = []
+    subagents = _cc_subagent_index(path, warnings)
+    events = _cc_scan(path, MAIN, warnings)
+    events = _cc_splice(events, subagents, warnings, {path.resolve()})
+    return finalize_run(path, "cc", events, warnings)
 
 
-def cc_project_dir(repo_path):
+def cc_project_dir(repo_path) -> Path:
     """~/.claude/projects/<abs path with every non-alphanumeric char as '-'>.
 
     CC collapses dots as well as separators, so `/x/.claude-worktrees/w` becomes
@@ -378,6 +472,11 @@ def cc_project_dir(repo_path):
     """
     slug = re.sub(r"[^A-Za-z0-9]", "-", str(Path(repo_path).resolve()))
     return Path.home() / ".claude" / "projects" / slug
+
+
+def cc_transcripts(project_dir) -> Iterable[Path]:
+    """Every file in a CC project directory that could be a session transcript."""
+    return Path(project_dir).glob("*.jsonl")
 
 
 # --------------------------------------------------------------------------- #
@@ -388,32 +487,54 @@ class Platform:
     """Everything platform specific, bound together so main() picks one thing."""
 
     name: str
-    parse: object        # (transcript path) -> Run
-    project_dir: object  # (repo path) -> Path
+    parse: Callable[[Path], Run]
+    project_dir: Callable[[object], Path]
+    transcripts: Callable[[Path], Iterable[Path]]
 
 
-PLATFORMS = {"cc": Platform("cc", parse_cc_run, cc_project_dir)}
+PLATFORMS = {"cc": Platform("cc", parse_cc_run, cc_project_dir, cc_transcripts)}
 
 
 # --------------------------------------------------------------------------- #
 # Run discovery
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Exclusion:
+    """A candidate that was not put in the sample, and why."""
+
+    path: Path
+    reason: str
+
+
 @dataclass
 class Discovery:
-    """The outcome of looking for runs to check."""
+    """The sample to judge, plus every candidate that did not make it into it."""
 
     requested: int
-    runs: list = field(default_factory=list)
-    warnings: list = field(default_factory=list)
+    explicit: bool = False
+    runs: list[Run] = field(default_factory=list)
+    excluded: list[Exclusion] = field(default_factory=list)
 
     @property
-    def shortfall(self):
+    def shortfall(self) -> int:
         """How many requested runs were never found. The only definition of it."""
         return max(0, self.requested - len(self.runs))
 
+    @property
+    def gaps(self) -> list[str]:
+        """Every reason the sample may not be the evidence that was asked for."""
+        notes = [f"excluded {e.path.name}: {e.reason}" for e in self.excluded]
+        if self.shortfall:
+            notes.append(f"asked for {self.requested} run(s) but only "
+                         f"{len(self.runs)} could be measured")
+        return notes
 
-def parse_since(value):
-    """Turn an ISO 8601 timestamp into an epoch second count."""
+
+def parse_since(value: str) -> float:
+    """Turn an ISO 8601 timestamp into an epoch second count.
+
+    A trailing 'Z' means UTC; a naive stamp is read in the machine's own zone.
+    """
     try:
         moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
@@ -421,49 +542,61 @@ def parse_since(value):
     return moment.timestamp()
 
 
-def _by_mtime_desc(project_dir):
-    """The project dir's transcripts, newest first, tolerating files that vanish."""
+def _newest_first(paths, found: Discovery) -> list[tuple[float, Path]]:
+    """Sort candidates by mtime, newest first; a file that cannot be stat()ed is
+    reported rather than dropped."""
     dated = []
-    for candidate in project_dir.glob("*.jsonl"):
+    for candidate in paths:
         try:
             dated.append((candidate.stat().st_mtime, candidate))
-        except OSError:
-            continue
-    dated.sort(key=lambda pair: pair[0], reverse=True)
+        except OSError as exc:
+            found.excluded.append(Exclusion(candidate, f"cannot be stat()ed ({exc})"))
+    dated.sort(key=lambda pair: (-pair[0], pair[1].name))
     return dated
 
 
-def find_latest_runs(project_dir, count, parser=parse_cc_run, theme=None, since=None):
+def load_runs(paths, parse: Callable[[Path], Run]) -> Discovery:
+    """Parse exactly the transcripts the caller named. Nothing is filtered out."""
+    found = Discovery(requested=len(paths), explicit=True)
+    for path in paths:
+        try:
+            found.runs.append(parse(path))
+        except TranscriptError as exc:
+            found.excluded.append(Exclusion(Path(path), str(exc)))
+    return found
+
+
+def find_runs(project_dir, count: int, parse: Callable[[Path], Run],
+              transcripts: Callable[[Path], Iterable[Path]],
+              theme: Optional[str] = None,
+              since: Optional[float] = None) -> Discovery:
     """Return a Discovery holding the newest `count` runs, newest first.
 
-    Selection is deliberately blind to whether a run passes: a run that failed
-    to emit its markers has to stay in the sample, or the check would be
-    choosing its own evidence. Narrow the sample with `theme` (exact match on a
-    `BPTRACE start` theme, design doc 7.3) or `since` (epoch seconds).
+    `since` (epoch seconds) is a window: transcripts older than it were never
+    candidates. Everything else that is passed over is an Exclusion carrying its
+    reason, including a `theme` that does not match -- a run without a start
+    marker is precisely the one a measurement must not lose.
     """
     project_dir = Path(project_dir)
     if not project_dir.is_dir():
         raise TranscriptError(f"no such project directory: {project_dir}")
     found = Discovery(requested=count)
-    for mtime, candidate in _by_mtime_desc(project_dir):
+    for mtime, candidate in _newest_first(transcripts(project_dir), found):
         if len(found.runs) >= count:
             break
         if since is not None and mtime < since:
-            continue
+            break
         try:
-            run = parser(candidate)
+            run = parse(candidate)
         except TranscriptError as exc:
-            found.warnings.append(f"skipped {candidate.name}: {exc}")
+            found.excluded.append(Exclusion(candidate, f"cannot be read ({exc})"))
             continue
         if theme is not None and not any(
                 m.detail.get("theme") == theme for m in run.start_markers):
+            found.excluded.append(Exclusion(
+                candidate, f"emitted no 'BPTRACE start' with theme {theme!r}"))
             continue
         found.runs.append(run)
-    if found.shortfall:
-        scope = f" with theme {theme!r}" if theme is not None else ""
-        found.warnings.append(
-            f"asked for the latest {count} run(s){scope} but found only "
-            f"{len(found.runs)} in {project_dir}")
     return found
 
 
@@ -486,14 +619,14 @@ class Expectation:
     spec: str
     selector: str
     step: str = ""
-    keys: dict = field(default_factory=dict)
-    count: int = None  # None = "at least one, in order"
+    keys: dict[str, str] = field(default_factory=dict)
+    count: Optional[int] = None  # None = "at least one, in order"
 
     @property
-    def kind(self):
+    def kind(self) -> str:
         return _SELECTOR_KIND[self.selector]
 
-    def matches(self, event):
+    def matches(self, event: Event) -> bool:
         if event.kind != self.kind:
             return False
         if self.selector == "step" and event.detail.get("step") != self.step:
@@ -510,7 +643,28 @@ class Expectation:
         return True
 
 
-def _parse_spec(spec, count=None):
+def _split_pairs(tail: str, spec: str) -> list[str]:
+    """Split `key=value,key=value` on unescaped commas, unescaping as it goes."""
+    parts, current, escaped = [], [], False
+    for char in tail:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ",":
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if escaped:
+        raise UsageError(
+            f"{spec!r} ends in a lone backslash; write \\\\ for a literal backslash")
+    parts.append("".join(current))
+    return [p for p in parts if p]
+
+
+def _parse_spec(spec: str, count: Optional[int] = None) -> Expectation:
     head, _, tail = spec.partition(":")
     selector, _, step = head.partition("=")
     if selector not in _SELECTOR_KIND:
@@ -527,8 +681,8 @@ def _parse_spec(spec, count=None):
     elif step:
         raise UsageError(f"selector {selector!r} takes no '=<value>' (got {head!r} in {spec!r})")
     allowed = _SELECTOR_KEYS[selector] | _COMMON_KEYS
-    keys = {}
-    for part in filter(None, tail.split(",")):
+    keys: dict[str, str] = {}
+    for part in _split_pairs(tail, spec):
         key, sep, value = part.partition("=")
         if not sep:
             raise UsageError(f"expected key=value, got {part!r} in {spec!r}")
@@ -537,16 +691,20 @@ def _parse_spec(spec, count=None):
                 f"{selector!r} has no key {key!r}; valid keys: {', '.join(sorted(allowed))}")
         if key in keys:
             raise UsageError(f"key {key!r} is given twice in {spec!r}")
+        if key == "contains" and not value:
+            raise UsageError(
+                f"'contains' may not be empty in {spec!r}: it would match every "
+                f"command there is")
         keys[key] = value
     return Expectation(spec=spec, selector=selector, step=step, keys=keys, count=count)
 
 
-def parse_expectation(spec):
+def parse_expectation(spec: str) -> Expectation:
     """Parse an ordered expectation ('at least one match, in this order')."""
     return _parse_spec(spec)
 
 
-def parse_count_expectation(spec):
+def parse_count_expectation(spec: str) -> Expectation:
     """Parse 'SPEC=N' into an exact-count expectation, splitting at the last '='."""
     body, sep, number = spec.rpartition("=")
     if not sep:
@@ -558,7 +716,7 @@ def parse_count_expectation(spec):
     return _parse_spec(body, count=int(number))
 
 
-def is_checked(ordered, counted):
+def is_checked(ordered, counted) -> bool:
     """True when the caller actually asked for a verdict. The only definition."""
     return bool(ordered or counted)
 
@@ -567,13 +725,13 @@ def is_checked(ordered, counted):
 class Result:
     run: Run
     passed: bool
-    failures: list = field(default_factory=list)
-    anomalies: list = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
+    anomalies: list[str] = field(default_factory=list)
     checked: bool = False
 
 
-def _nearby(run, expectation):
-    """Describe what was actually observed for the same selector, for the failure text."""
+def _nearby(run: Run, expectation: Expectation) -> str:
+    """What was actually observed for the same selector, for the failure text."""
     loose = Expectation(expectation.spec, expectation.selector, expectation.step)
     seen = [e.describe() for e in run.events if loose.matches(e)]
     if seen:
@@ -581,14 +739,15 @@ def _nearby(run, expectation):
     # Widen: the same kind of thing, plus any line that tried to be a marker.
     wanted = {expectation.kind}
     if expectation.selector in ("start", "step"):
-        wanted.add(MARKER_MALFORMED)
+        wanted |= {MARKER_MALFORMED, MARKER_QUOTED}
     seen = [e.describe() for e in run.events if e.kind in wanted]
     return "; observed: " + (" / ".join(seen) if seen else "nothing of that kind")
 
 
-def evaluate(run, ordered, counted, allow_anomalies=False):
+def evaluate(run: Run, ordered, counted, allow_anomalies: bool = False) -> Result:
     """Judge a parsed run. Ordered expectations must match in sequence."""
-    failures, anomalies = [], []
+    failures: list[str] = []
+    anomalies: list[str] = []
 
     starts = len(run.start_markers)
     if starts != 1:
@@ -596,6 +755,10 @@ def evaluate(run, ordered, counted, allow_anomalies=False):
             f"{starts} start marker(s) found (exactly 1 expected for a well-formed run)")
     for marker in run.malformed_markers:
         anomalies.append(f"malformed BPTRACE line at {marker.describe()}")
+    for marker in run.quoted_markers:
+        anomalies.append(
+            f"BPTRACE marker only appears inside quoted text, so it is not "
+            f"evidence: {marker.describe()}")
     anomalies.extend(run.warnings)
 
     cursor = 0
@@ -628,7 +791,7 @@ def evaluate(run, ordered, counted, allow_anomalies=False):
 # --------------------------------------------------------------------------- #
 # Reporting
 # --------------------------------------------------------------------------- #
-def _run_dict(result):
+def _run_dict(result: Result) -> dict:
     run = result.run
     return {
         "path": str(run.path),
@@ -639,6 +802,9 @@ def _run_dict(result):
         "malformed_markers": [{"text": m.detail["text"], "origin": m.origin,
                                "source": m.source, "line": m.line}
                               for m in run.malformed_markers],
+        "quoted_markers": [{"text": m.detail["text"], "as": m.detail.get("as", ""),
+                            "origin": m.origin, "source": m.source, "line": m.line}
+                           for m in run.quoted_markers],
         "delegations": [{"to": d.detail.get("to", ""), "origin": d.origin}
                         for d in run.delegations],
         "bash_calls": [{"command": b.detail.get("command", ""), "origin": b.origin}
@@ -653,17 +819,34 @@ def _run_dict(result):
     }
 
 
-def print_report(result, out, verbose=False):
+def print_discovery(found: Discovery, out) -> None:
+    """Show the sample and everything that was left out of it, with reasons."""
+    print(f"selected {len(found.runs)}/{found.requested} run(s)", file=out)
+    for run in found.runs:
+        print(f"  + {run.path}", file=out)
+    print(f"excluded {len(found.excluded)} candidate(s)", file=out)
+    for exclusion in found.excluded:
+        print(f"  - {exclusion.path}: {exclusion.reason}", file=out)
+
+
+def _print_list(label: str, events: list[Event], out, verbose: bool) -> None:
+    print(f"  {label} : {len(events)}", file=out)
+    shown = events if verbose or len(events) <= LIST_LIMIT else events[:LIST_LIMIT]
+    for event in shown:
+        print(f"    - {event.describe()}", file=out)
+    if len(shown) < len(events):
+        print(f"    ... {len(events) - len(shown)} more (--verbose to list them)", file=out)
+
+
+def print_report(result: Result, out, verbose: bool = False) -> None:
     run = result.run
     print(f"=== {run.path}", file=out)
-    for label, events in (("start markers", run.start_markers),
-                          ("step markers ", run.step_markers),
-                          ("delegations  ", run.delegations),
-                          ("bash calls   ", run.bash_calls),
-                          ("malformed    ", run.malformed_markers)):
-        print(f"  {label} : {len(events)}", file=out)
-        for event in events:
-            print(f"    - {event.describe()}", file=out)
+    _print_list("start markers", run.start_markers, out, verbose)
+    _print_list("step markers ", run.step_markers, out, verbose)
+    _print_list("delegations  ", run.delegations, out, verbose)
+    _print_list("bash calls   ", run.bash_calls, out, verbose)
+    _print_list("malformed    ", run.malformed_markers, out, verbose)
+    _print_list("quoted       ", run.quoted_markers, out, verbose)
     print(f"  event order   : {len(run.events)} event(s)", file=out)
     if verbose or (result.checked and not result.passed):
         for event in run.events:
@@ -681,21 +864,25 @@ def print_report(result, out, verbose=False):
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__.split("\n\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__[__doc__.index("Usage:"):])
-    parser.add_argument("transcript", nargs="?", help="path to a transcript .jsonl")
+    parser.add_argument("transcript", nargs="*", metavar="RUN.jsonl",
+                        help="the transcripts to judge; every one of them is judged")
     parser.add_argument("--latest", type=int, metavar="N",
-                        help="check the newest N runs in the project directory")
+                        help="instead, discover the newest N runs in the project directory")
     parser.add_argument("--theme", metavar="TEXT",
-                        help="only runs whose 'BPTRACE start' theme is exactly TEXT")
+                        help="keep only runs whose 'BPTRACE start' theme is exactly TEXT; "
+                             "candidates that do not match are reported, not dropped")
     parser.add_argument("--since", metavar="ISO8601",
-                        help="only transcripts modified at or after this timestamp")
+                        help="window: only transcripts modified at or after this timestamp")
     parser.add_argument("--project-dir", help="where to look for transcripts (default: derived "
                                               "from --repo / the current directory)")
     parser.add_argument("--repo", help="repository the transcripts belong to (default: .)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the selection and its exclusions, then stop")
     parser.add_argument("--platform", default="cc", choices=sorted(PLATFORMS),
                         help="transcript format (default: cc)")
     parser.add_argument("--expect", "--expect-marker", action="append", default=[],
@@ -706,34 +893,35 @@ def build_parser():
     parser.add_argument("--expect-delegations", type=int, metavar="N",
                         help="shorthand for --expect-count delegate=N")
     parser.add_argument("--allow-anomalies", action="store_true",
-                        help="report damaged evidence but do not fail the run for it")
+                        help="report damaged evidence inside a run but do not fail for it; "
+                             "a gap in the sample itself still fails")
     parser.add_argument("--verbose", action="store_true",
-                        help="print the whole ordered event stream (implied by a failure)")
+                        help="print every event and every list in full (implied by a failure)")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     return parser
 
 
-def _discover(args, platform):
-    """Resolve the command line into the runs to judge, plus discovery warnings."""
-    if (args.transcript is None) == (args.latest is None):
-        raise UsageError("give either a transcript path or --latest N")
-    if args.transcript is not None:
+def _discover(args, platform: Platform) -> Discovery:
+    """Resolve the command line into the runs to judge, plus what was left out."""
+    if bool(args.transcript) == (args.latest is not None):
+        raise UsageError("give either one or more transcript paths or --latest N")
+    if args.transcript:
         for name in ("project_dir", "repo", "theme", "since"):
             if getattr(args, name) is not None:
                 raise UsageError(
-                    f"--{name.replace('_', '-')} only applies to --latest; an explicit "
-                    f"transcript path already is the whole selection")
-        return Discovery(requested=1, runs=[platform.parse(args.transcript)])
+                    f"--{name.replace('_', '-')} only applies to --latest; explicit "
+                    f"transcript paths already are the whole selection")
+        return load_runs(args.transcript, platform.parse)
     if args.latest < 1:
         raise UsageError("--latest needs a positive count")
     project_dir = (Path(args.project_dir) if args.project_dir
                    else platform.project_dir(args.repo or "."))
     since = parse_since(args.since) if args.since else None
-    return find_latest_runs(project_dir, args.latest, platform.parse,
-                            theme=args.theme, since=since)
+    return find_runs(project_dir, args.latest, platform.parse, platform.transcripts,
+                     theme=args.theme, since=since)
 
 
-def _run(args):
+def _run(args) -> int:
     platform = PLATFORMS[args.platform]
     ordered = [parse_expectation(s) for s in args.expect]
     counted = [parse_count_expectation(s) for s in args.expect_count]
@@ -742,39 +930,62 @@ def _run(args):
     checked = is_checked(ordered, counted)
 
     found = _discover(args, platform)
+    if args.dry_run:
+        print_discovery(found, sys.stdout)
+        return 0
+    if not checked and found.explicit and found.excluded:
+        # Nothing to judge and the named file could not be read: an IO error.
+        raise TranscriptError(found.excluded[0].reason)
+
     results = [evaluate(run, ordered, counted, args.allow_anomalies) for run in found.runs]
-    # A shortfall is only a verdict when a verdict was asked for; report-only
-    # mode just says how little it found.
-    passed = all(r.passed for r in results) and not (checked and found.shortfall)
+    # A gap in the sample is not an anomaly to tolerate; it is missing evidence,
+    # and --allow-anomalies does not reach it.
+    gaps = found.gaps if checked else []
+    passed = all(r.passed for r in results) and not gaps
 
     if args.json:
         json.dump({"passed": passed, "checked": checked, "requested": found.requested,
-                   "missing": found.shortfall, "warnings": found.warnings,
+                   "missing": found.shortfall,
+                   "selected": [str(r.path) for r in found.runs],
+                   "excluded": [{"path": str(e.path), "reason": e.reason}
+                                for e in found.excluded],
+                   "gaps": gaps,
                    "runs": [_run_dict(r) for r in results]},
                   sys.stdout, indent=2, ensure_ascii=False)
         print()
     else:
+        print_discovery(found, sys.stdout)
         for result in results:
             print_report(result, sys.stdout, verbose=args.verbose)
-        for warning in found.warnings:
-            print(f"! {warning}")
+        for gap in gaps:
+            print(f"x {gap}")
         if checked:
             good = sum(1 for r in results if r.passed)
             missing = f" ({found.shortfall} missing)" if found.shortfall else ""
             print(f"{good}/{found.requested} run(s) PASS{missing} "
                   f"-> {'PASS' if passed else 'FAIL'}")
-        elif not results:
-            print("no runs found")
     return 0 if passed else 1
 
 
-def main(argv=None):
-    args = build_parser().parse_args(argv)
+def _silence_stdout() -> None:
+    """Redirect stdout to /dev/null so the interpreter's exit flush cannot fail."""
     try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+    except OSError:
+        pass
+
+
+def main(argv=None) -> int:
+    try:
+        args = build_parser().parse_args(argv)
         return _run(args)
     except (UsageError, TranscriptError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except BrokenPipeError:
+        _silence_stdout()  # `... | head` is not a failure of the check
+        return 0
     except Exception as exc:  # a crash must never be mistaken for a FAIL verdict
         print(f"internal error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2

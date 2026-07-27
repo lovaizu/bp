@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+import typing
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,16 @@ def write_meta(sub_path, **fields):
     meta = sub_path.with_name(sub_path.name[: -len(".jsonl")] + ".meta.json")
     meta.write_text(json.dumps(fields), encoding="utf-8")
     return meta
+
+
+def happy_meta(tmp_path, session="s1"):
+    """The .meta.json that links happy_run()'s delegation to its subagent transcript."""
+    return tmp_path / session / "subagents" / "agent-aaa.meta.json"
+
+
+def happy_sub(tmp_path, session="s1"):
+    """The subagent transcript happy_run() delegates to."""
+    return tmp_path / session / "subagents" / "agent-aaa.jsonl"
 
 
 START = 'BPTRACE start theme="neon night" wf=techtest.md'
@@ -216,7 +227,7 @@ def test_an_unclosed_fence_swallows_the_rest_of_the_block_only(tmp_path):
     'BPTRACE start theme="a "b" c" wf=techtest.md',
     "BPTRACE start wf=techtest.md",
     "BPTRACE step=1 actor=main",
-    "BPTRACE something else entirely",
+    "BPTRACE step=１ out actor=main",
 ])
 def test_a_bptrace_line_that_missed_the_format_is_recorded_as_malformed(tmp_path, line):
     # Given a line that tried to be a marker but is not one
@@ -328,12 +339,20 @@ def test_event_kinds_are_normalised_by_the_parser(tmp_path):
 
 
 def test_expectations_never_look_at_tool_names():
-    # Given the judging layer
-    source = Path(ct.__file__).read_text(encoding="utf-8")
-    judging = source[source.index("class Expectation"):source.index("def _run_dict")]
-    # When it is inspected
-    # Then it mentions no platform tool-name table at all
-    assert "AGENT_TOOL_NAMES" not in judging and "BASH_TOOL_NAMES" not in judging
+    # Given a synthetic event stream whose platform tool names are pure nonsense
+    run = ct.Run(path=Path("synthetic.jsonl"), platform="made-up", events=[
+        ct.Event(1, ct.DELEGATE, ct.MAIN, "synthetic.jsonl", 1,
+                 name="Kwyjibo", detail={"to": "echo-bot"}),
+        ct.Event(2, ct.BASH, ct.MAIN, "synthetic.jsonl", 2,
+                 name="Zzyzx", detail={"command": "make build"}),
+    ])
+    # When expectations phrased purely in normalised kinds are evaluated
+    result = ct.evaluate(run, [ct.parse_expectation("delegate:to=echo-bot"),
+                               ct.parse_expectation("bash:contains=make")],
+                         [ct.parse_count_expectation("delegate=1")],
+                         allow_anomalies=True)
+    # Then they match, so the judging layer never consulted the tool names
+    assert result.passed, result.failures
 
 
 def test_platform_registry_pairs_a_parser_with_a_project_dir_resolver():
@@ -343,6 +362,7 @@ def test_platform_registry_pairs_a_parser_with_a_project_dir_resolver():
     # Then both halves of the platform binding are reachable from one entry
     assert platform.parse is ct.parse_cc_run
     assert platform.project_dir("/home/u/work/bp").name == "-home-u-work-bp"
+    assert callable(platform.transcripts)
 
 
 # --- parsing: robustness ------------------------------------------------------
@@ -403,8 +423,7 @@ def test_delegation_without_a_subagent_transcript_is_warned_about(tmp_path):
 def test_corrupt_subagent_meta_says_why_the_link_failed(tmp_path):
     # Given a subagents dir whose meta.json is unreadable
     p = happy_run(tmp_path, session="s1")
-    (tmp_path / "s1" / "subagents" / "agent-aaa.meta.json").write_text("{oops",
-                                                                      encoding="utf-8")
+    happy_meta(tmp_path).write_text("{oops", encoding="utf-8")
     # When parsed
     run = ct.parse_cc_run(p)
     # Then the parent stream survives and the reason is stated, not swallowed
@@ -416,8 +435,7 @@ def test_corrupt_subagent_meta_says_why_the_link_failed(tmp_path):
 def test_meta_json_holding_a_list_is_a_warning_not_a_crash(tmp_path):
     # Given a .meta.json that is valid JSON but not an object
     p = happy_run(tmp_path, session="s1")
-    (tmp_path / "s1" / "subagents" / "agent-aaa.meta.json").write_text('["x"]',
-                                                                      encoding="utf-8")
+    happy_meta(tmp_path).write_text('["x"]', encoding="utf-8")
     # When parsed
     run = ct.parse_cc_run(p)
     # Then the parser degrades to a warning instead of raising AttributeError
@@ -440,7 +458,7 @@ def test_string_content_does_not_crash_the_parser(tmp_path):
 def test_unreadable_subagent_meta_says_so(tmp_path):
     # Given a .meta.json the process cannot open
     p = happy_run(tmp_path, session="s1")
-    meta = tmp_path / "s1" / "subagents" / "agent-aaa.meta.json"
+    meta = happy_meta(tmp_path)
     meta.chmod(0o000)
     try:
         if os.access(meta, os.R_OK):
@@ -456,7 +474,7 @@ def test_unreadable_subagent_meta_says_so(tmp_path):
 def test_subagent_meta_without_its_transcript_says_so(tmp_path):
     # Given a .meta.json whose sibling .jsonl was never written
     p = happy_run(tmp_path, session="s1")
-    (tmp_path / "s1" / "subagents" / "agent-aaa.jsonl").unlink()
+    happy_sub(tmp_path).unlink()
     # When parsed
     run = ct.parse_cc_run(p)
     # Then the gap is named rather than passed off as "never delegated"
@@ -464,20 +482,23 @@ def test_subagent_meta_without_its_transcript_says_so(tmp_path):
     assert not any(e.origin.startswith("subagent:") for e in run.events)
 
 
-def test_a_transcript_that_vanishes_mid_search_is_skipped(tmp_path):
+def test_a_transcript_that_vanishes_mid_search_is_named_not_swallowed(tmp_path):
     # Given a dangling entry in the project dir (a file removed while listing)
     marked(tmp_path, "good.jsonl", START)
     (tmp_path / "gone.jsonl").symlink_to(tmp_path / "never-existed.jsonl")
     # When the search runs
-    found = ct.find_latest_runs(tmp_path, 1)
-    # Then it does not raise, and the readable transcript is still found
+    found = ct.find_runs(tmp_path, 1, ct.parse_cc_run, ct.cc_transcripts)
+    # Then it does not raise, the readable transcript is still found, and the
+    # candidate that could not even be stat()ed is reported as an evidence gap
     assert [r.path.name for r in found.runs] == ["good.jsonl"]
+    assert [e.path.name for e in found.excluded] == ["gone.jsonl"]
+    assert any("gone.jsonl" in g for g in found.gaps)
 
 
 def test_subagent_meta_without_a_tool_use_id_is_ignored(tmp_path):
     # Given a subagents dir whose meta.json has no toolUseId
     p = happy_run(tmp_path, session="s1")
-    (tmp_path / "s1" / "subagents" / "agent-aaa.meta.json").write_text(
+    happy_meta(tmp_path).write_text(
         json.dumps({"agentType": "techtest-echo"}), encoding="utf-8")
     # When parsed
     run = ct.parse_cc_run(p)
@@ -703,7 +724,8 @@ def test_origin_catches_a_marker_the_parent_merely_transcribed(tmp_path):
         "step=2:actor=techtest-echo,origin=subagent:techtest-echo")], [])
     # Then the parent's copy does not satisfy it
     assert not result.passed
-    assert "origin" in " ".join(result.failures) or "main" in " ".join(result.failures)
+    # and the failure text shows where the marker really came from
+    assert "[main " in " ".join(result.failures)
 
 
 def test_origin_is_matched_exactly_not_by_prefix(tmp_path):
@@ -868,31 +890,63 @@ def test_latest_takes_the_newest_runs_regardless_of_their_verdict(tmp_path):
     marked(tmp_path, "mid.jsonl", START, mtime=2000)
     marked(tmp_path, "new.jsonl", "I forgot to print the marker.", mtime=3000)
     # When the latest 2 are searched
-    found = ct.find_latest_runs(tmp_path, 2)
+    found = ct.find_runs(tmp_path, 2, ct.parse_cc_run, ct.cc_transcripts)
     # Then the marker-less run is still in the sample -- it is the one to catch
     assert [r.path.name for r in found.runs] == ["new.jsonl", "mid.jsonl"]
-    assert found.shortfall == 0
+    assert found.shortfall == 0 and found.gaps == []
 
 
-def test_latest_selects_by_exact_theme(tmp_path):
+def test_theme_keeps_matching_runs_and_reports_the_ones_it_dropped(tmp_path):
     # Given runs from two different measurements
     marked(tmp_path, "a.jsonl", 'BPTRACE start theme="run-42" wf=techtest.md', mtime=1000)
     marked(tmp_path, "b.jsonl", 'BPTRACE start theme="other" wf=techtest.md', mtime=2000)
     marked(tmp_path, "c.jsonl", 'BPTRACE start theme="run-42" wf=techtest.md', mtime=3000)
     # When the theme scopes the search
-    found = ct.find_latest_runs(tmp_path, 5, theme="run-42")
-    # Then only that measurement's runs come back, newest first
+    found = ct.find_runs(tmp_path, 5, ct.parse_cc_run, ct.cc_transcripts, theme="run-42")
+    # Then that measurement's runs come back, newest first
     assert [r.path.name for r in found.runs] == ["c.jsonl", "a.jsonl"]
+    # and the run the theme dropped is named, not silently absent
+    assert [e.path.name for e in found.excluded] == ["b.jsonl"]
+    assert "run-42" in found.excluded[0].reason
     assert found.shortfall == 3
+
+
+def test_theme_never_backfills_the_sample_with_an_older_run(tmp_path):
+    # Given a newest run that emitted no start marker at all, and two older good ones
+    marked(tmp_path, "old.jsonl", 'BPTRACE start theme="run-42" wf=techtest.md', mtime=1000)
+    marked(tmp_path, "mid.jsonl", 'BPTRACE start theme="run-42" wf=techtest.md', mtime=2000)
+    marked(tmp_path, "new.jsonl", "I forgot to print the marker.", mtime=3000)
+    # When the latest 2 of that theme are searched
+    found = ct.find_runs(tmp_path, 2, ct.parse_cc_run, ct.cc_transcripts, theme="run-42")
+    # Then the two older runs did fill the quota -- but the run that should have
+    # been caught is reported as an exclusion, so the sample is not silently good
+    assert [r.path.name for r in found.runs] == ["mid.jsonl", "old.jsonl"]
+    assert found.shortfall == 0
+    assert [e.path.name for e in found.excluded] == ["new.jsonl"]
+    assert found.gaps
+
+
+def test_since_is_a_window_not_an_exclusion(tmp_path):
+    # Given plenty of transcripts from before the measurement window
+    marked(tmp_path, "ancient.jsonl", START, mtime=1000)
+    marked(tmp_path, "old.jsonl", START, mtime=2000)
+    marked(tmp_path, "new.jsonl", START, mtime=time.time())
+    # When the window starts after them
+    found = ct.find_runs(tmp_path, 1, ct.parse_cc_run, ct.cc_transcripts,
+                         since=time.time() - 3600)
+    # Then the out-of-window files are simply not candidates: no gap is reported
+    assert [r.path.name for r in found.runs] == ["new.jsonl"]
+    assert found.excluded == [] and found.gaps == []
 
 
 def test_theme_selection_is_not_a_substring_match(tmp_path):
     # Given a run whose theme merely contains the requested token
     marked(tmp_path, "a.jsonl", 'BPTRACE start theme="run-420" wf=techtest.md')
     # When the shorter theme is searched
-    found = ct.find_latest_runs(tmp_path, 1, theme="run-42")
-    # Then it does not match
+    found = ct.find_runs(tmp_path, 1, ct.parse_cc_run, ct.cc_transcripts, theme="run-42")
+    # Then it does not match, and the near miss is reported rather than dropped
     assert found.runs == []
+    assert [e.path.name for e in found.excluded] == ["a.jsonl"]
 
 
 def test_since_excludes_transcripts_written_before_the_session(tmp_path):
@@ -900,18 +954,32 @@ def test_since_excludes_transcripts_written_before_the_session(tmp_path):
     marked(tmp_path, "old.jsonl", START, mtime=1000)
     marked(tmp_path, "new.jsonl", START, mtime=time.time())
     # When the search is limited to the last hour
-    found = ct.find_latest_runs(tmp_path, 5, since=time.time() - 3600)
+    found = ct.find_runs(tmp_path, 5, ct.parse_cc_run, ct.cc_transcripts,
+                         since=time.time() - 3600)
     # Then only the recent transcript is considered
     assert [r.path.name for r in found.runs] == ["new.jsonl"]
 
 
-def test_since_accepts_an_iso8601_string():
-    # Given an ISO 8601 timestamp
+def test_since_reads_a_trailing_z_as_utc_and_a_naive_stamp_as_local():
+    # Given the same wall-clock time written with and without a UTC marker
+    # When they are converted
+    utc = ct.parse_since("2026-07-27T00:00:00Z")
+    naive = ct.parse_since("2026-07-27T00:00:00")
+    # Then 'Z' is exactly that instant in UTC
+    assert utc == 1785110400.0
+    # an explicit offset is honoured too: +09:00 is nine hours earlier
+    assert ct.parse_since("2026-07-27T00:00:00+09:00") == 1785078000.0
+    assert utc - 1785078000.0 == 9 * 3600
+    # and the naive form is that wall clock in the machine's own zone, so it is
+    # the same instant as the 'Z' form only on a machine running UTC
+    assert naive == time.mktime((2026, 7, 27, 0, 0, 0, 0, 0, -1))
+    assert (naive == utc) == (time.timezone == 0 and not time.daylight)
+
+
+def test_since_rejects_a_stamp_it_cannot_read():
+    # Given something that is not a timestamp
     # When it is converted
-    ts = ct.parse_since("2026-07-27T00:00:00")
-    # Then a comparable epoch value comes back
-    assert isinstance(ts, float) and ts > 0
-    # and nonsense is rejected
+    # Then a usage error is raised
     with pytest.raises(ct.UsageError):
         ct.parse_since("yesterday")
 
@@ -921,9 +989,9 @@ def test_latest_honours_the_requested_count(tmp_path):
     marked(tmp_path, "a.jsonl", START, mtime=1000)
     marked(tmp_path, "b.jsonl", START, mtime=2000)
     # When only the latest 1 is requested
-    found = ct.find_latest_runs(tmp_path, 1)
+    found = ct.find_runs(tmp_path, 1, ct.parse_cc_run, ct.cc_transcripts)
     # Then exactly one run comes back and nothing is flagged short
-    assert [r.path.name for r in found.runs] == ["b.jsonl"] and found.warnings == []
+    assert [r.path.name for r in found.runs] == ["b.jsonl"] and found.gaps == []
 
 
 def test_an_unreadable_transcript_does_not_abort_the_search(tmp_path):
@@ -935,10 +1003,11 @@ def test_an_unreadable_transcript_does_not_abort_the_search(tmp_path):
         if os.access(bad, os.R_OK):
             pytest.skip("cannot make a file unreadable here (running as root?)")
         # When the search runs
-        found = ct.find_latest_runs(tmp_path, 1)
-        # Then the readable one is still found and the skip is reported
+        found = ct.find_runs(tmp_path, 1, ct.parse_cc_run, ct.cc_transcripts)
+        # Then the readable one is still found and the skip is an evidence gap
         assert [r.path.name for r in found.runs] == ["good.jsonl"]
-        assert any("bad.jsonl" in w for w in found.warnings)
+        assert [e.path.name for e in found.excluded] == ["bad.jsonl"]
+        assert any("bad.jsonl" in g for g in found.gaps)
     finally:
         bad.chmod(0o644)
 
@@ -948,7 +1017,7 @@ def test_latest_on_a_missing_project_dir_raises(tmp_path):
     # When runs are searched
     # Then a TranscriptError is raised
     with pytest.raises(ct.TranscriptError):
-        ct.find_latest_runs(tmp_path / "nope", 1)
+        ct.find_runs(tmp_path / "nope", 1, ct.parse_cc_run, ct.cc_transcripts)
 
 
 def test_project_dir_is_derived_from_an_absolute_path():
@@ -1003,15 +1072,14 @@ def test_cli_exits_2_on_a_missing_file(tmp_path):
     assert r.returncode == 2 and "nope.jsonl" in r.stderr
 
 
-def test_cli_exits_2_when_an_unexpected_exception_escapes(tmp_path):
+def test_cli_treats_a_non_object_meta_json_as_a_failing_anomaly_not_a_crash(tmp_path):
     # Given a .meta.json that used to raise AttributeError deep in the parser
     p = happy_run(tmp_path, session="s1")
-    (tmp_path / "s1" / "subagents" / "agent-aaa.meta.json").write_text('["x"]',
-                                                                      encoding="utf-8")
+    happy_meta(tmp_path).write_text('["x"]', encoding="utf-8")
     # When the CLI runs with --json
     r = run_cli(str(p), "--json", "--expect", "start")
-    # Then it must not exit 2; a crash is reserved for genuine internal errors
-    assert r.returncode in (0, 1), r.stderr
+    # Then it is a FAIL (damaged evidence), not exit 2 and never a PASS
+    assert r.returncode == 1, r.stdout + r.stderr
     assert json.loads(r.stdout)["runs"][0]["anomalies"]
 
 
@@ -1068,16 +1136,53 @@ def test_cli_latest_fails_when_a_recent_run_forgot_its_marker(tmp_path):
     assert "s3.jsonl" in r.stdout and "2/3" in r.stdout
 
 
-def test_cli_theme_scopes_the_measurement(tmp_path):
-    # Given one run from this measurement and one from an earlier one
+def test_cli_theme_cannot_silently_drop_a_newer_run_from_the_sample(tmp_path):
+    # Given a newer run the theme does not match and an older one it does
     marked(tmp_path, "a.jsonl", 'BPTRACE start theme="other" wf=techtest.md', mtime=3000)
     marked(tmp_path, "b.jsonl", 'BPTRACE start theme="run-42" wf=techtest.md', mtime=2000)
-    # When the theme is given
+    # When the theme is given together with expectations
     r = run_cli("--latest", "1", "--project-dir", str(tmp_path), "--theme", "run-42",
                 "--expect", "start:theme=run-42")
-    # Then only the matching run is checked
+    # Then the matching run passes on its own merits, but the skipped candidate
+    # is named and the verdict is FAIL: the sample is not the one asked for
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "b.jsonl" in r.stdout
+    assert "a.jsonl" in r.stdout and "excluded" in r.stdout
+
+
+def test_cli_dry_run_shows_the_selection_without_judging_it(tmp_path):
+    # Given the same two runs
+    marked(tmp_path, "a.jsonl", 'BPTRACE start theme="other" wf=techtest.md', mtime=3000)
+    marked(tmp_path, "b.jsonl", 'BPTRACE start theme="run-42" wf=techtest.md', mtime=2000)
+    # When --dry-run is used to inspect what would be measured
+    r = run_cli("--latest", "1", "--project-dir", str(tmp_path), "--theme", "run-42",
+                "--dry-run", "--expect", "start:theme=run-42")
+    # Then both the selection and the exclusions are shown, and nothing is judged
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "b.jsonl" in r.stdout and "a.jsonl" not in r.stdout
+    assert "b.jsonl" in r.stdout and "a.jsonl" in r.stdout
+    assert "PASS" not in r.stdout and "FAIL" not in r.stdout
+
+
+def test_cli_judges_every_transcript_named_on_the_command_line(tmp_path):
+    # Given three runs handed over explicitly, one of which forgot its markers
+    a = happy_run(tmp_path / "one", session="s1")
+    b = happy_run(tmp_path / "two", session="s1")
+    c = marked(tmp_path, "c.jsonl", "I skipped the markers this time.")
+    # When all three paths are given as positional arguments
+    r = run_cli(str(a), str(b), str(c), "--expect", "start")
+    # Then all three are judged and the bad one cannot hide behind the good ones
+    assert r.returncode == 1, r.stdout
+    assert "2/3 run(s) PASS -> FAIL" in r.stdout
+
+
+def test_cli_fails_when_an_explicitly_named_run_cannot_be_read(tmp_path):
+    # Given one good run and one path that does not exist
+    a = happy_run(tmp_path / "one", session="s1")
+    # When both are named and expectations are given
+    r = run_cli(str(a), str(tmp_path / "nope.jsonl"), "--expect", "start")
+    # Then the unreadable one is a FAIL, never a sample of size one
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "nope.jsonl" in r.stdout
 
 
 def test_cli_latest_fails_when_fewer_runs_than_requested(tmp_path):
@@ -1134,8 +1239,25 @@ def test_cli_latest_says_so_when_no_run_matches_the_theme(tmp_path):
     marked(tmp_path, "a.jsonl", 'BPTRACE start theme="other" wf=techtest.md')
     # When --latest runs without expectations
     r = run_cli("--latest", "1", "--project-dir", str(tmp_path), "--theme", "run-42")
-    # Then it says so and still exits 0 (report-only mode has no verdict)
-    assert r.returncode == 0 and "no runs found" in r.stdout
+    # Then it selected nothing, said which candidate it passed over and why,
+    # and still exits 0 (report-only mode has no verdict)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "selected 0/1" in r.stdout
+    assert "a.jsonl" in r.stdout and "run-42" in r.stdout
+
+
+def test_cli_latest_reports_the_runs_it_selected(tmp_path):
+    # Given two runs in the project dir
+    happy_run(tmp_path, session="s1")
+    happy_run(tmp_path, session="s2")
+    for name, when in (("s1.jsonl", 1000), ("s2.jsonl", 2000)):
+        os.utime(tmp_path / name, (when, when))
+    # When the latest 2 are checked
+    r = run_cli("--latest", "2", "--project-dir", str(tmp_path), "--expect", "start")
+    # Then the sample it used is spelled out before the verdict
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "selected 2/2" in r.stdout
+    assert "s1.jsonl" in r.stdout and "s2.jsonl" in r.stdout
 
 
 # --- V15: output volume -------------------------------------------------------
@@ -1173,6 +1295,453 @@ def test_the_help_text_carries_no_project_specific_example():
     # When it is read
     # Then no BLACKPINK-specific resource leaks into the generic option help
     assert "filter-songs.sh" not in r.stdout
+
+
+# --- C: what "quoted" means ---------------------------------------------------
+QUOTED_SHAPES = {
+    "four space indented code block":
+        "The workflow says:\n\n    " + STEP1 + "\n\nThat is all.",
+    "fence inside a list item":
+        "- Example:\n  - ```\n    " + STEP1 + "\n    ```\n",
+    "fence nested inside a wider quotation":
+        "Here is the agent file:\n\n```\n## OUT\n\n```json\n{\"status\": \"ok\"}\n```\n"
+        + STEP2 + "\n```\n\nThat is the whole file.",
+    "html comment":
+        "<!-- hidden note\n" + STEP1 + "\nstill hidden -->\n",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(QUOTED_SHAPES))
+def test_a_marker_in_quoted_text_is_not_evidence(tmp_path, shape):
+    # Given assistant text that quotes a marker without running anything
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(QUOTED_SHAPES[shape]))])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then the quotation is not mistaken for the model's own output
+    assert run.start_markers == [] and run.step_markers == []
+    assert run.malformed_markers == []
+
+
+@pytest.mark.parametrize("shape", sorted(QUOTED_SHAPES))
+def test_a_marker_in_quoted_text_is_recorded_rather_than_dropped(tmp_path, shape):
+    # Given the same quotations
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(QUOTED_SHAPES[shape]))])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then "not evidence" is not the same as "never happened"
+    assert len(run.quoted_markers) == 1
+    assert "BPTRACE" in run.quoted_markers[0].detail["text"]
+
+
+def test_an_inline_code_span_does_not_open_a_fence(tmp_path):
+    # Given a line that is one long inline code span made of triple backticks
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text("```" + START + "```\n" + STEP1)),
+    ])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then the span is not a fence, so it swallows nothing after it
+    assert [m.detail["step"] for m in run.step_markers] == ["1"]
+    assert run.start_markers == []
+
+
+def test_silencing_stdout_can_never_itself_crash():
+    # Given a machine on which even /dev/null cannot be attached to stdout
+    code = ("import os, sys\n"
+            "import check_transcript as ct\n"
+            "os.dup2 = lambda *a: (_ for _ in ()).throw(OSError('no fds'))\n"
+            "ct._silence_stdout()\n"
+            "sys.stderr.write('survived\\n')\n")
+    # When the broken-pipe safety net runs
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       cwd=str(SCRIPT.parent))
+    # Then it stays silent rather than turning a closed pipe into a traceback
+    assert r.returncode == 0, r.stderr
+    assert "survived" in r.stderr
+
+
+def test_a_marker_inside_a_one_line_html_comment_is_neither_evidence_nor_a_miss(tmp_path):
+    # Given a marker buried in a single-line HTML comment
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)), assistant(text("<!-- " + STEP1 + " -->")),
+        assistant(text("After the comment.")),
+    ])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then it counts for nothing and the comment does not swallow what follows
+    assert run.step_markers == [] and run.malformed_markers == []
+    assert ct.evaluate(run, [ct.parse_expectation("start")], []).passed
+
+
+def test_an_html_comment_closes_and_lets_evidence_resume(tmp_path):
+    # Given a comment that ends before the real marker
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text("<!-- draft\nBPTRACE step=9 out actor=nobody\n-->\n" + STEP1)),
+    ])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then only the line after the comment is evidence
+    assert [m.detail["step"] for m in run.step_markers] == ["1"]
+
+
+def test_a_fence_that_closes_an_inner_fence_does_not_reopen_evidence(tmp_path):
+    # Given a quoted file whose own body contains a ```json fence
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(QUOTED_SHAPES["fence nested inside a wider quotation"])),
+        assistant(text(STEP1)),
+    ])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then only the marker the model really emitted counts
+    assert [m.detail["step"] for m in run.step_markers] == ["1"]
+
+
+def test_prose_after_a_nested_quotation_is_evidence_again(tmp_path):
+    # Given the nested quotation followed, in the same block, by a real marker
+    body = QUOTED_SHAPES["fence nested inside a wider quotation"] + "\n" + STEP1
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(body))])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then the outer fence really did close and the marker after it counts
+    assert [m.detail["step"] for m in run.step_markers] == ["1"]
+
+
+def test_evidence_lines_marks_each_line_as_quoted_or_not():
+    # Given a text block mixing prose, a fence and an indented block
+    lines = list(ct.evidence_lines("alpha\n```\nbeta\n```\n    gamma\ndelta"))
+    # When the classification is read
+    # Then only the two prose lines are offered as evidence
+    assert [line for line, quoted in lines if not quoted] == ["alpha", "delta"]
+
+
+# --- C': a quoted marker is an anomaly, not a silence -------------------------
+def test_a_quoted_marker_is_surfaced_as_an_anomaly(tmp_path):
+    # Given a run that put its real-looking marker inside the JSON fence
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)),
+        assistant(text('```json\n{"status": "ok"}\n' + STEP1 + "\n```")),
+    ])
+    run = ct.parse_cc_run(p)
+    # When it is checked for step 1
+    result = ct.evaluate(run, [ct.parse_expectation("step=1:actor=main")], [])
+    # Then it fails, and says the marker was found but only inside quoted text
+    assert not result.passed
+    assert any("quoted" in a for a in result.anomalies)
+    assert STEP1 in " ".join(result.anomalies)
+
+
+def test_a_quoted_malformed_line_is_just_noise(tmp_path):
+    # Given a fenced block holding a near miss rather than a real marker
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)), assistant(text("```\nBPTRACE step=1 actor=main\n```")),
+    ])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then quoting a broken line is not worth reporting at all
+    assert run.malformed_markers == [] and run.quoted_markers == []
+
+
+# --- D: talking about BPTRACE is not a failed marker --------------------------
+@pytest.mark.parametrize("line", [
+    "BPTRACEマーカーは、この誤判定を防ぐための**固定トークン**です。",
+    "- `BPTRACE` マーカーが正しく出力されるか",
+    "BPTRACE something else entirely",
+    "The BPTRACE convention is described in the design doc.",
+    "`BPTRACE`",
+])
+def test_merely_mentioning_bptrace_is_not_a_malformed_marker(tmp_path, line):
+    # Given Japanese or English prose that discusses the marker token
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(START)), assistant(text(line))])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then it is not a near miss: the run is still clean
+    assert run.malformed_markers == []
+    assert ct.evaluate(run, [ct.parse_expectation("start")], []).passed
+
+
+def test_a_run_is_not_failed_by_prose_that_discusses_the_marker(tmp_path):
+    # Given a run that is perfect apart from a paragraph about BPTRACE
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)),
+        assistant(text("BPTRACEマーカーは、この誤判定を防ぐための固定トークンです。")),
+        assistant(text(STEP1)),
+    ])
+    run = ct.parse_cc_run(p)
+    # When it is checked
+    result = ct.evaluate(run, [ct.parse_expectation("step=1:actor=main")], [])
+    # Then it passes
+    assert result.passed, result.failures + result.anomalies
+
+
+# --- E: only ASCII digits are a step number -----------------------------------
+def test_a_full_width_step_number_is_not_a_valid_marker(tmp_path):
+    # Given a marker whose step number is a full-width digit
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)), assistant(text("BPTRACE step=\uff11 out actor=main")),
+    ])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then it is a near miss, not a step marker (the expectation side is ASCII only)
+    assert run.step_markers == []
+    assert len(run.malformed_markers) == 1
+
+
+# --- F: a second platform is a registry entry, not a fork ---------------------
+def fake_platform(tmp_path):
+    """A make-believe platform whose transcripts are .log files of marker lines."""
+
+    def parse(path):
+        path = Path(path)
+        if not path.is_file():
+            raise ct.TranscriptError(f"no such transcript: {path}")
+        events, warnings = [], []
+        for line_no, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for kind, detail in ct.markers_in_text(raw):
+                events.append(ct.Event(0, kind, ct.MAIN, str(path), line_no, detail=detail))
+        return ct.finalize_run(path, "ghc", events, warnings)
+
+    return ct.Platform("ghc", parse, lambda repo: Path(tmp_path),
+                       lambda d: sorted(Path(d).glob("*.log")))
+
+
+def test_a_second_platform_only_has_to_supply_its_own_file_listing(tmp_path):
+    # Given a platform whose transcripts are not *.jsonl at all
+    platform = fake_platform(tmp_path)
+    (tmp_path / "r1.log").write_text(START + "\n" + STEP1 + "\n", encoding="utf-8")
+    # When the shared discovery layer is asked for the latest run
+    found = ct.find_runs(tmp_path, 1, platform.parse, platform.transcripts)
+    # Then it finds it, with no CC assumption anywhere in the way
+    assert [r.path.name for r in found.runs] == ["r1.log"]
+    assert found.gaps == []
+    assert ct.evaluate(found.runs[0], [ct.parse_expectation("step=1:actor=main")], []).passed
+
+
+def test_discovery_will_not_guess_a_parser(tmp_path):
+    # Given a caller that forgot to say which platform it is reading
+    # When discovery is invoked without a parser
+    # Then it is a programming error, not a silent fallback to Claude Code
+    with pytest.raises(TypeError):
+        ct.find_runs(tmp_path, 1)
+
+
+def test_the_marker_helpers_are_part_of_the_shared_layer():
+    # Given the module
+    # When a platform parser looks for the BPTRACE primitives
+    # Then they are public, so a new parser need not reach into CC internals
+    for name in ("evidence_lines", "marker_from_line", "markers_in_text", "finalize_run"):
+        assert callable(getattr(ct, name)), name
+
+
+def test_finalize_run_numbers_the_stream_it_is_given():
+    # Given loose events from some parser
+    events = [ct.Event(0, ct.BASH, ct.MAIN, "x", i, detail={"command": "ls"})
+              for i in range(3)]
+    # When the run is finalised
+    run = ct.finalize_run(Path("x"), "ghc", events, ["note"])
+    # Then the sequence numbers are assigned once, in order
+    assert [e.seq for e in run.events] == [1, 2, 3]
+    assert run.platform == "ghc" and run.warnings == ["note"]
+
+
+# --- G: the exit-code contract ------------------------------------------------
+def test_a_crash_while_building_the_parser_is_exit_2(tmp_path):
+    # Given argument parsing itself blowing up in an unforeseen way
+    boom = ("import check_transcript as ct, sys\n"
+            "ct.build_parser = lambda: (_ for _ in ()).throw(RuntimeError('kaboom'))\n"
+            "sys.exit(ct.main(['x.jsonl']))\n")
+    # When the CLI runs
+    r = subprocess.run([sys.executable, "-c", boom], capture_output=True, text=True,
+                       cwd=str(SCRIPT.parent))
+    # Then it is an internal error (2), not Python's default 1 which means FAIL
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "internal error" in r.stderr
+
+
+def test_a_closed_pipe_is_not_an_internal_error(tmp_path):
+    # Given a report far larger than a pipe buffer
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(START))] + [
+        assistant(tool_use("Bash", f"t{i}", command=f"echo {'x' * 200} {i}"))
+        for i in range(2000)])
+    # When its output is piped into a reader that stops after one line
+    r = subprocess.run(
+        ["bash", "-c", f"{sys.executable} {SCRIPT} {p} --verbose | head -1; "
+                       "exit ${PIPESTATUS[0]}"], capture_output=True, text=True)
+    # Then the writer exits cleanly instead of reporting BrokenPipeError
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "BrokenPipeError" not in r.stderr and "internal error" not in r.stderr
+
+
+# --- H: the default report has to stay readable -------------------------------
+def test_a_long_category_list_is_truncated_without_verbose(tmp_path):
+    # Given a run with far more bash calls than anybody wants to read
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(START))] + [
+        assistant(tool_use("Bash", f"t{i}", command=f"echo {i}")) for i in range(50)])
+    # When the default report is printed
+    r = run_cli(str(p))
+    # Then the count is exact but the listing is capped, and says how to see it all
+    assert "bash calls    : 50" in r.stdout
+    assert r.stdout.count("bash: echo ") <= ct.LIST_LIMIT
+    assert "more" in r.stdout and "--verbose" in r.stdout
+    # and --verbose really does print them all
+    assert run_cli(str(p), "--verbose").stdout.count("bash: echo ") >= 50
+
+
+def test_a_multiline_command_is_described_on_one_line(tmp_path):
+    # Given a heredoc-style bash call
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(tool_use("Bash", "t1", command="python - <<'EOF'\n" + "print(1)\n" * 40
+                           + "EOF")),
+    ])
+    run = ct.parse_cc_run(p)
+    # When the event is described
+    described = run.bash_calls[0].describe()
+    # Then it is a single line, and bounded
+    assert "\n" not in described
+    assert len(described) < 250
+
+
+def test_the_report_of_a_real_sized_run_stays_small(tmp_path):
+    # Given a run with hundreds of events, as a real session has
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(START))] + [
+        assistant(tool_use("Bash", f"t{i}", command=f"line one {i}\nline two {i}"))
+        for i in range(300)])
+    # When the default report is produced
+    r = run_cli(str(p))
+    # Then it is a summary, not a transcript dump
+    assert len(r.stdout.splitlines()) < 60, r.stdout[:2000]
+
+
+# --- I: the expectation parser has no quiet reinterpretations -----------------
+def test_a_comma_in_a_value_can_be_escaped():
+    # Given a theme that really does contain a comma
+    e = ct.parse_expectation(r"start:theme=a\,b,wf=quick.md")
+    # When parsed
+    # Then the escaped comma stays inside the value and the real one still splits
+    assert e.keys == {"theme": "a,b", "wf": "quick.md"}
+
+
+def test_a_backslash_in_a_value_can_be_escaped():
+    # Given a value holding a literal backslash
+    e = ct.parse_expectation(r"bash:contains=C:\\tmp")
+    # When parsed
+    # Then one backslash survives
+    assert e.keys["contains"] == "C:\\tmp"
+
+
+def test_a_dangling_backslash_is_a_usage_error():
+    # Given a spec that ends mid escape
+    # When parsed
+    # Then it is rejected instead of being silently dropped
+    with pytest.raises(ct.UsageError):
+        ct.parse_expectation("start:theme=a\\")
+
+
+def test_an_empty_contains_is_rejected():
+    # Given a bash expectation with nothing to look for
+    # When parsed
+    # Then it is refused, because "" matches every command there is
+    with pytest.raises(ct.UsageError):
+        ct.parse_count_expectation("bash:contains==0")
+    with pytest.raises(ct.UsageError):
+        ct.parse_expectation("bash:contains=")
+
+
+def test_a_subagent_without_an_agent_type_gets_an_unmistakable_origin(tmp_path):
+    # Given a .meta.json that links a transcript but names no agent type
+    p = happy_run(tmp_path, session="s1")
+    write_meta(happy_sub(tmp_path), toolUseId="t2", spawnDepth=1)
+    run = ct.parse_cc_run(p)
+    # When the spliced events are inspected
+    origins = {e.origin for e in run.events}
+    # Then the placeholder cannot be mistaken for a real agent called "subagent"
+    assert "subagent:subagent" not in origins
+    assert "subagent:<unknown>" in origins
+    # and an expectation naming a plausible agent type does not match it by luck
+    assert not ct.evaluate(run, [ct.parse_expectation(
+        "step=2:origin=subagent:subagent")], [], allow_anomalies=True).passed
+
+
+# --- J: the declared types are the real ones ----------------------------------
+def test_the_platform_registry_declares_callables_not_object():
+    # Given the Platform record
+    hints = typing.get_type_hints(ct.Platform)
+    # When its annotations are read
+    # Then the three hooks are declared as callables, not as `object`
+    for field_name in ("parse", "project_dir", "transcripts"):
+        assert hints[field_name] is not object, field_name
+        assert "Callable" in str(hints[field_name]), (field_name, hints[field_name])
+
+
+def test_an_optional_count_is_declared_optional():
+    # Given the Expectation record, whose count really may be None
+    hints = typing.get_type_hints(ct.Expectation)
+    # When the annotation is read
+    # Then it admits None
+    assert type(None) in typing.get_args(hints["count"])
+
+
+# --- --allow-anomalies through the CLI ----------------------------------------
+def test_cli_allow_anomalies_turns_a_damaged_run_into_a_pass(tmp_path):
+    # Given a run that meets its expectations but emitted two start markers
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)), assistant(text(START)), assistant(text(STEP1)),
+    ])
+    # When it is checked without the flag
+    strict = run_cli(str(p), "--expect", "step=1:actor=main")
+    # Then the damaged evidence fails it
+    assert strict.returncode == 1 and "anomal" in strict.stdout
+    # and with the flag it passes, with the anomaly still on the record
+    lax = run_cli(str(p), "--expect", "step=1:actor=main", "--allow-anomalies")
+    assert lax.returncode == 0, lax.stdout + lax.stderr
+    assert "2 start marker(s)" in lax.stdout
+
+
+def test_cli_allow_anomalies_does_not_excuse_a_missing_run(tmp_path):
+    # Given fewer runs in the project dir than the check asked for
+    happy_run(tmp_path, session="s1")
+    # When --allow-anomalies is given as well
+    r = run_cli("--latest", "3", "--project-dir", str(tmp_path), "--expect", "start",
+                "--allow-anomalies")
+    # Then a shortfall is still a FAIL: missing evidence is not a tolerable anomaly
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "2 missing" in r.stdout
+
+
+def test_cli_allow_anomalies_does_not_excuse_an_unreadable_newest_run(tmp_path):
+    # Given the newest transcript being unreadable and two older good ones
+    happy_run(tmp_path, session="s1")
+    happy_run(tmp_path, session="s2")
+    newest = marked(tmp_path, "s3.jsonl", START)
+    for name, when in (("s1.jsonl", 1000), ("s2.jsonl", 2000), ("s3.jsonl", 3000)):
+        os.utime(tmp_path / name, (when, when))
+    newest.chmod(0o000)
+    try:
+        if os.access(newest, os.R_OK):
+            pytest.skip("cannot make a file unreadable here (running as root?)")
+        # When the latest 2 are checked
+        r = run_cli("--latest", "2", "--project-dir", str(tmp_path), "--expect", "start",
+                    "--allow-anomalies")
+        # Then the two older runs do not quietly backfill the sample
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "s3.jsonl" in r.stdout and "excluded" in r.stdout
+    finally:
+        newest.chmod(0o644)
+
+
+def test_cli_json_carries_the_discovery_record(tmp_path):
+    # Given a search that had to pass over a candidate
+    marked(tmp_path, "a.jsonl", 'BPTRACE start theme="other" wf=techtest.md', mtime=3000)
+    marked(tmp_path, "b.jsonl", 'BPTRACE start theme="run-42" wf=techtest.md', mtime=2000)
+    # When --json is used
+    r = run_cli("--latest", "1", "--project-dir", str(tmp_path), "--theme", "run-42",
+                "--json", "--expect", "start")
+    data = json.loads(r.stdout)
+    # Then the machine-readable form names the sample and what was left out of it
+    assert data["passed"] is False
+    assert [Path(x).name for x in data["selected"]] == ["b.jsonl"]
+    assert data["excluded"][0]["path"].endswith("a.jsonl")
+    assert "run-42" in data["excluded"][0]["reason"]
+    assert data["gaps"]
 
 
 # --- recorded real transcripts (committed fixtures) ---------------------------
@@ -1234,12 +1803,25 @@ def test_recorded_delegating_run_emitted_both_step_markers_from_the_parent():
 
 def test_recorded_dev_session_is_not_mistaken_for_a_run():
     # Given a recorded development session: marker text in tool results, tool inputs,
-    # prose and fenced quotations, but never as the model's own output
+    # prose, fenced quotations, indented blocks and Japanese discussion of the
+    # marker token, but never as the model's own output
     run = ct.parse_cc_run(DATA_DEV_SESSION)
     # When parsed
     # Then nothing at all is treated as evidence
     assert run.start_markers == [] and run.step_markers == []
+    # and the Japanese prose about BPTRACE is not mistaken for a failed marker
     assert run.malformed_markers == []
+
+
+def test_recorded_dev_session_still_records_what_it_quoted():
+    # Given the same development session
+    run = ct.parse_cc_run(DATA_DEV_SESSION)
+    # When the quoted markers are inspected
+    quoted = [m.detail["text"] for m in run.quoted_markers]
+    # Then every quotation shape is on the record rather than silently discarded
+    assert len(quoted) >= 6
+    assert 'BPTRACE start theme="neon night" wf=techtest.md' in quoted
+    assert "BPTRACE step=2 out actor=techtest-echo" in quoted
 
 
 def test_recorded_dev_session_fails_the_stage_b_expectations():
@@ -1267,7 +1849,7 @@ def test_recorded_fixtures_carry_no_personal_data():
 @needs_live
 def test_live_project_dir_can_be_scanned_without_crashing():
     # Given a live CC project directory on this machine
-    found = ct.find_latest_runs(Path(LIVE_DIR), 3)
+    found = ct.find_runs(Path(LIVE_DIR), 3, ct.parse_cc_run, ct.cc_transcripts)
     # When the newest runs are parsed
     # Then every run comes back with an ordered, numbered event stream
     for run in found.runs:
