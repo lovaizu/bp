@@ -1,0 +1,9 @@
+{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Run filter-songs.sh for each mood tag."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll run the filter commands."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-sub-1", "name": "Bash", "input": {"command": "bash /repo/.claude/skills/sample/resources/filter-songs.sh --mood hype"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-sub-1", "content": "[{\"id\":\"song_a\",\"energy\":95},{\"id\":\"song_b\",\"energy\":90}]"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-sub-2", "name": "Bash", "input": {"command": "bash /repo/.claude/skills/sample/resources/filter-songs.sh --mood fierce"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-sub-2", "content": "[{\"id\":\"song_a\",\"energy\":95},{\"id\":\"song_b\",\"energy\":90}]"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-sub-3", "name": "Bash", "input": {"command": "bash /repo/.claude/skills/sample/resources/filter-songs.sh --mood party"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-sub-3", "content": "[{\"id\":\"song_a\",\"energy\":95},{\"id\":\"song_b\",\"energy\":90}]"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "{\"songs\": [\"song_a\", \"song_b\"]}"}]}}

@@ -1,0 +1,8 @@
+{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Add the BPTRACE start theme=\"x\" wf=y.md line to the workflow."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-read-wf", "name": "Read", "input": {"file_path": "/repo/.claude/skills/sample/workflows/quick.md"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-read-wf", "content": "     1\t# Quick workflow\n     2\tBPTRACE start theme=\"<theme>\" wf=quick.md\n     3\t## Step 1\n     4\tBPTRACE step=1 out actor=main\n"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-write", "name": "Write", "input": {"file_path": "/repo/.claude/skills/sample/workflows/quick.md", "content": "BPTRACE start theme=\"<theme>\" wf=quick.md\nBPTRACE step=1 out actor=main\n"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-write", "content": "File written"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Rewrote 7.3: the marker format is now `BPTRACE start theme=\"...\" wf=...` plus the step lines."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Here is what the workflow now emits:\n\n```\nBPTRACE start theme=\"neon night\" wf=techtest.md\nBPTRACE step=1 out actor=main\nBPTRACE step=2 out actor=techtest-echo\n```\n\nThat covers both steps."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "And in a tilde fence:\n\n~~~text\nBPTRACE step=3 out actor=main\n~~~\n\nDone."}]}}

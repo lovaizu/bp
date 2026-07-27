@@ -1,0 +1,15 @@
+{"type": "mode", "mode": "default"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Use the sample skill for: give me a quick setlist"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-skill", "name": "Skill", "input": {"skill": "sample", "args": "give me a quick setlist"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-skill", "content": "Base directory for this skill: /repo/.claude"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-read-wf", "name": "Read", "input": {"file_path": "/repo/.claude/skills/sample/workflows/quick.md"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-read-wf", "content": "     1\t# Quick workflow\n     2\tBPTRACE start theme=\"<theme>\" wf=quick.md\n     3\t## Step 1\n     4\tBPTRACE step=1 out actor=main\n"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "BPTRACE start theme=\"give me a quick setlist\" wf=quick.md"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-bash-parent", "name": "Bash", "input": {"command": "bash /repo/.claude/skills/sample/resources/filter-songs.sh --mood hype"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-bash-parent", "content": "[{\"id\":\"song_a\",\"energy\":95},{\"id\":\"song_b\",\"energy\":90}]"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-agent-1", "name": "Agent", "input": {"description": "Filter songs by mood", "subagent_type": "sample-song-finder", "prompt": "Run filter-songs.sh for each mood tag."}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-agent-1", "content": "{\"songs\": [\"song_a\", \"song_b\"]}"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-read-2", "name": "Read", "input": {"file_path": "/repo/.claude/skills/sample/resources/members.json"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-read-2", "content": "{\"members\": [\"a\", \"b\"]}"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "BPTRACE step=1 out actor=main\n\n**Step 2 - Show Plan**\n\n1. song_a\n2. song_b\n\nBPTRACE step=2 out actor=main"}]}}
+{"type": "system", "content": "(redacted)"}
