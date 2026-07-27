@@ -268,9 +268,9 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 # State
 
 <!-- rn:state -->
-- **Status**: not suspended
-- **Date**: YYYY-MM-DD
-- **Last completed**: #N description
-- **Next**: #N description
-- **Notes**: bounded forward pointer — branch/PR, next concrete action, open blockers, user-deferred paths, open questions / pending decisions not yet captured in `design.md`; not a re-narration of the session (that lives in `git log`)
+- **Status**: paused
+- **Date**: 2026-07-27
+- **Last completed**: #1 の Step 2（`scripts/check_transcript.py` の作成)。コミット `a4d6fc0` → `47561ed` → `0afffc5`
+- **Next**: #1 の「3ラウンド目の修正を検証し、レビューを1巡させる」— 12件中5件はスポット確認済み、残り7件が未検証(下記)
+- **Notes**: ブランチ `feature/blackpink-setlist-planner`(push 済み、リモートと同期)。3巡目の修正(コミット `44e093d`)は tree にコミット済みだがレビュー未了。未検証の7件: (1) info付き連続フェンスの誤FAIL (2) 本物マーカーが `marker_quoted` で誤FAIL (3) `subagent_type` 欠落時の `to` フォールバック (4) `thinking` ブロックのテスト固定 (5) リスト項目内フェンスのテスト交絡 (6) `.coveragerc` の再現手順 (7) フィクスチャ説明の訂正。このセッションで QA レビューエージェントを起動しようとしたがユーザーに拒否され中断 — 再開時は先にユーザーへ意図を確認してから専門家レビューを起動すること。レビュー反復は上限3回に到達済みなので、残件が critical なら実測前にユーザーへエスカレーションする。測定はユーザー操作のコールドセッションでのみ行う(このセッション内で `/techtest` を起動しない)。判定コマンドは2段階(`--dry-run` で候補確認 → パス明示で判定)。
 <!-- rn:state-end -->
