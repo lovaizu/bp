@@ -258,12 +258,9 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 # State
 
 <!-- rn:state -->
-Status: paused
-Date: 2026-07-24
-Last completed: D-8 — チェックスクリプトを各タスクに分散統合する形にタスク構成を修正（8タスク→7タスク）。ブランチ履歴をmain基点で1コミットにスカッシュしforce-push済み
-Next: #1 — 最小チェックスクリプト（`scripts/check-transcript.py` 等）を作成し、`/techtest` をCCで3回コールドセッション実測してマーカー・委譲・非委譲の再現性を確認する
-
-Notes:
-- `/techtest` 一式（`.claude/commands/techtest.md`, `.claude/agents/techtest-echo.md`）は作成済み・push済み。チェックスクリプトは未作成
-- 次のアクション: チェックスクリプト作成 → ユーザーにCCでの `/techtest hello` 3回コールドセッション実行を依頼 → transcript をスクリプトで判定
+- **Status**: not suspended
+- **Date**: YYYY-MM-DD
+- **Last completed**: #N description
+- **Next**: #N description
+- **Notes**: bounded forward pointer — branch/PR, next concrete action, open blockers, user-deferred paths, open questions / pending decisions not yet captured in `design.md`; not a re-narration of the session (that lives in `git log`)
 <!-- rn:state-end -->
