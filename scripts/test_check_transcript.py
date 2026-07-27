@@ -16,11 +16,20 @@ import check_transcript as ct  # noqa: E402
 SCRIPT = Path(__file__).with_name("check_transcript.py")
 TESTDATA = Path(__file__).with_name("testdata")
 
-# Recorded, anonymised excerpts of real Claude Code transcripts. These are
-# committed, so the "does it match reality" tests run everywhere.
+# Hand-built minimal fixtures, written to the shape a real Claude Code
+# transcript has: the same outer envelope (uuid / parentUuid / timestamp /
+# sessionId / isSidechain / cwd / version / gitBranch), the same message and
+# content-block structure, the same subagents/<name>.jsonl + .meta.json layout.
+# They are *not* recordings -- the events in them were composed to pin one
+# behaviour each -- so they are evidence that the parser handles a given shape,
+# never evidence about what the model really did. Checks against genuine
+# transcripts are a separate, manual step (and the opt-in tests below).
 DATA_NO_DELEGATION = TESTDATA / "cc-no-delegation.jsonl"
 DATA_DELEGATION = TESTDATA / "cc-delegation.jsonl"
+DATA_UNTYPED_DELEGATION = TESTDATA / "cc-delegation-untyped.jsonl"
 DATA_DEV_SESSION = TESTDATA / "cc-dev-session.jsonl"
+DATA_FILES = [DATA_NO_DELEGATION, DATA_DELEGATION, DATA_UNTYPED_DELEGATION,
+              DATA_DEV_SESSION]
 
 # Opt-in only: point this at a live CC project dir to re-check against whatever
 # that machine happens to hold. Never a substitute for the fixtures above.
@@ -310,6 +319,52 @@ def test_merged_stream_is_numbered_in_display_order(tmp_path):
     # When the sequence numbers are read
     # Then they increase monotonically across the splice
     assert [e.seq for e in run.events] == list(range(1, len(run.events) + 1))
+
+
+def test_a_delegation_with_no_recorded_target_takes_it_from_the_meta(tmp_path):
+    # Given an Agent call CC wrote without a subagent_type, whose spawned
+    # transcript's .meta.json does name the agent type
+    main = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(tool_use("Agent", "t1", prompt="input: neon night")),
+    ])
+    sub = tmp_path / "s" / "subagents" / "agent-a.jsonl"
+    write_jsonl(sub, [assistant(text(STEP2))])
+    write_meta(sub, agentType="techtest-echo", toolUseId="t1", spawnDepth=1)
+    # When parsed
+    run = ct.parse_cc_run(main)
+    # Then `to` and `origin` agree, instead of one of them being unmatchable
+    assert run.delegations[0].detail["to"] == "techtest-echo"
+    assert run.delegations[0].describe().endswith("delegate -> techtest-echo")
+    assert ct.evaluate(run, [ct.parse_expectation("delegate:to=techtest-echo"),
+                             ct.parse_expectation(
+                                 "step=2:origin=subagent:techtest-echo")], []).passed
+
+
+def test_a_recorded_subagent_type_is_never_overwritten_by_the_meta(tmp_path):
+    # Given a transcript whose Agent call and .meta.json disagree
+    main = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(tool_use("Agent", "t1", subagent_type="as-called")),
+    ])
+    sub = tmp_path / "s" / "subagents" / "agent-a.jsonl"
+    write_jsonl(sub, [assistant(text(STEP2))])
+    write_meta(sub, agentType="as-spawned", toolUseId="t1", spawnDepth=1)
+    # When parsed
+    run = ct.parse_cc_run(main)
+    # Then the fallback stays a fallback: what the call itself said wins
+    assert run.delegations[0].detail["to"] == "as-called"
+
+
+def test_a_delegation_with_no_target_and_no_agent_type_stays_unnamed(tmp_path):
+    # Given neither a subagent_type nor an agentType to fall back on
+    main = write_jsonl(tmp_path / "s.jsonl", [assistant(tool_use("Agent", "t1"))])
+    sub = tmp_path / "s" / "subagents" / "agent-a.jsonl"
+    write_jsonl(sub, [assistant(text(STEP2))])
+    write_meta(sub, toolUseId="t1", spawnDepth=1)
+    # When parsed
+    run = ct.parse_cc_run(main)
+    # Then the placeholder origin is not smuggled into `to` as if it were real
+    assert run.delegations[0].detail["to"] == ""
+    assert run.delegations[0].describe().endswith("delegate -> ?")
 
 
 def test_legacy_task_tool_name_counts_as_delegation(tmp_path):
@@ -628,33 +683,58 @@ def test_out_of_order_markers_fail_the_ordered_expectation(tmp_path):
     assert "order" in " ".join(result.failures).lower()
 
 
-def test_duplicate_start_marker_is_reported_as_an_anomaly(tmp_path):
+def test_duplicate_start_marker_is_caught_by_the_count_the_caller_asked_for(tmp_path):
     # Given two start markers in one transcript
     p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(START)), assistant(text(START))])
     run = ct.parse_cc_run(p)
-    # When evaluated with no expectations
-    result = ct.evaluate(run, [], [])
-    # Then the anomaly is surfaced even though nothing was expected
-    assert any("start marker" in a for a in result.anomalies)
+    # When the measurement says how many it wanted
+    result = ct.evaluate(run, [], [ct.parse_count_expectation("start=1")])
+    # Then it fails on that expectation -- not on a rule baked into evaluate()
+    assert not result.passed
+    assert "expected 1 x start, got 2" in " ".join(result.failures)
 
 
-def test_zero_start_markers_is_reported_as_an_anomaly(tmp_path):
+def test_zero_start_markers_is_caught_by_the_count_the_caller_asked_for(tmp_path):
     # Given a transcript without any start marker
     p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(STEP1))])
     run = ct.parse_cc_run(p)
-    # When evaluated
-    result = ct.evaluate(run, [], [])
-    # Then the anomaly is surfaced
-    assert any("start marker" in a for a in result.anomalies)
+    # When the measurement demands exactly one
+    result = ct.evaluate(run, [], [ct.parse_count_expectation("start=1")])
+    # Then it fails, and reports nothing of that kind was seen
+    assert not result.passed
+    assert "got 0" in " ".join(result.failures)
+
+
+def test_a_check_unrelated_to_bptrace_is_judged_on_its_own_terms(tmp_path):
+    # Given a transcript with no BPTRACE marker anywhere, checked for a shell call
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(tool_use("Bash", "t1", command="make"))])
+    run = ct.parse_cc_run(p)
+    # When only that shell call is expected
+    result = ct.evaluate(run, [], [ct.parse_count_expectation("bash:contains=make=1")])
+    # Then it passes: the checker has no opinion about markers nobody asked for
+    assert result.passed, result.failures + result.anomalies
+    assert result.anomalies == []
+
+
+def test_the_docstring_recipe_spells_out_the_start_count_itself():
+    # Given the measurement recipe kept in the module docstring
+    # When it is read
+    # Then it asks for the start-marker count explicitly, because evaluate() will not
+    assert "--expect-count 'start=1'" in ct.__doc__
 
 
 # --- V5: broken evidence must not pass ----------------------------------------
-def test_an_anomaly_fails_a_checked_run(tmp_path):
-    # Given a run that meets every expectation but emitted two start markers
-    p = write_jsonl(tmp_path / "s.jsonl", [
-        assistant(text(START)), assistant(text(START)), assistant(text(STEP1)),
+def damaged_run(tmp_path):
+    """A run that meets its expectations but left a near-miss marker behind."""
+    return write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)), assistant(text("**" + START + "**")),
+        assistant(text(STEP1)),
     ])
-    run = ct.parse_cc_run(p)
+
+
+def test_an_anomaly_fails_a_checked_run(tmp_path):
+    # Given a run that meets every expectation but also emitted a malformed marker
+    run = ct.parse_cc_run(damaged_run(tmp_path))
     # When it is checked
     result = ct.evaluate(run, [ct.parse_expectation("step=1:actor=main")], [])
     # Then the damaged evidence is a failure, not a footnote
@@ -664,10 +744,7 @@ def test_an_anomaly_fails_a_checked_run(tmp_path):
 
 def test_allow_anomalies_restores_the_old_tolerance(tmp_path):
     # Given the same run
-    p = write_jsonl(tmp_path / "s.jsonl", [
-        assistant(text(START)), assistant(text(START)), assistant(text(STEP1)),
-    ])
-    run = ct.parse_cc_run(p)
+    run = ct.parse_cc_run(damaged_run(tmp_path))
     # When anomalies are explicitly allowed
     result = ct.evaluate(run, [ct.parse_expectation("step=1:actor=main")], [],
                          allow_anomalies=True)
@@ -677,11 +754,11 @@ def test_allow_anomalies_restores_the_old_tolerance(tmp_path):
 
 def test_anomalies_alone_do_not_fail_a_report_only_run(tmp_path):
     # Given a run with anomalies but no expectations
-    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(START)), assistant(text(START))])
-    run = ct.parse_cc_run(p)
+    run = ct.parse_cc_run(damaged_run(tmp_path))
     # When evaluated
     result = ct.evaluate(run, [], [])
-    # Then there is no verdict to fail
+    # Then the damage is on the record, but there is no verdict to fail
+    assert result.anomalies
     assert not result.checked and result.failures == []
 
 
@@ -1156,11 +1233,39 @@ def test_cli_dry_run_shows_the_selection_without_judging_it(tmp_path):
     marked(tmp_path, "b.jsonl", 'BPTRACE start theme="run-42" wf=techtest.md', mtime=2000)
     # When --dry-run is used to inspect what would be measured
     r = run_cli("--latest", "1", "--project-dir", str(tmp_path), "--theme", "run-42",
-                "--dry-run", "--expect", "start:theme=run-42")
+                "--dry-run")
     # Then both the selection and the exclusions are shown, and nothing is judged
     assert r.returncode == 0, r.stdout + r.stderr
     assert "b.jsonl" in r.stdout and "a.jsonl" in r.stdout
     assert "PASS" not in r.stdout and "FAIL" not in r.stdout
+
+
+@pytest.mark.parametrize("check", [
+    ["--expect", "start"],
+    ["--expect-count", "delegate=1"],
+    ["--expect-delegations", "1"],
+])
+def test_cli_refuses_to_pair_dry_run_with_an_expectation(tmp_path, check):
+    # Given a perfectly good run and a command line that both selects and expects
+    p = happy_run(tmp_path)
+    # When --dry-run is combined with an expectation
+    r = run_cli(str(p), "--dry-run", *check)
+    # Then it is a usage error: a forgotten --dry-run must never exit 0 having
+    # judged nothing at all
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "--dry-run" in r.stderr
+
+
+def test_cli_dry_run_still_emits_json_when_asked_to(tmp_path):
+    # Given a project dir and a caller that wants the selection machine-readable
+    marked(tmp_path, "a.jsonl", START, mtime=3000)
+    # When --json --dry-run is used
+    r = run_cli("--latest", "1", "--project-dir", str(tmp_path), "--dry-run", "--json")
+    # Then --json is honoured rather than quietly replaced by the text report
+    assert r.returncode == 0, r.stdout + r.stderr
+    data = json.loads(r.stdout)
+    assert data["dry_run"] is True and data["passed"] is None and data["runs"] == []
+    assert [Path(x).name for x in data["selected"]] == ["a.jsonl"]
 
 
 def test_cli_judges_every_transcript_named_on_the_command_line(tmp_path):
@@ -1205,6 +1310,97 @@ def test_cli_without_expectations_only_reports(tmp_path):
     assert "REPORT ONLY" in r.stdout
 
 
+def test_cli_json_without_expectations_reports_no_verdict_at_all(tmp_path):
+    # Given a run whose --expect was lost to a shell quoting accident
+    p = happy_run(tmp_path)
+    # When the JSON report is read
+    r = run_cli(str(p), "--json")
+    data = json.loads(r.stdout)
+    # Then nothing in it can be mistaken for "checked, and it was fine"
+    assert data["checked"] is False
+    assert data["passed"] is None
+    assert data["runs"][0]["passed"] is None and data["runs"][0]["checked"] is False
+    # and reporting is still a legitimate use, so the exit code stays 0
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+# --- V17: N runs means N different runs ---------------------------------------
+def test_the_same_transcript_named_twice_is_a_usage_error(tmp_path):
+    # Given one transcript handed over twice
+    p = happy_run(tmp_path)
+    # When the runs are loaded
+    # Then it is refused rather than counted as a sample of two
+    with pytest.raises(ct.UsageError):
+        ct.load_runs([str(p), str(p)], ct.parse_cc_run)
+
+
+def test_aliases_of_one_path_are_recognised_as_the_same_transcript(tmp_path):
+    # Given three different spellings of one file
+    p = happy_run(tmp_path)
+    aliases = [str(p),
+               str(p.parent / "." / p.name),
+               str(p.parent / ".." / p.parent.name / p.name)]
+    # When they are loaded together
+    # Then the resolved path, not the spelling, decides
+    with pytest.raises(ct.UsageError):
+        ct.load_runs(aliases, ct.parse_cc_run)
+
+
+def test_cli_three_copies_of_one_path_cannot_report_three_of_three(tmp_path):
+    # Given the completion criterion "3 runs out of 3", and one run named 3 times
+    p = happy_run(tmp_path)
+    # When the CLI is asked to judge it
+    r = run_cli(str(p), str(p), str(p), "--expect", "start")
+    # Then it refuses (exit 2) instead of printing "3/3 run(s) PASS -> PASS"
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "same transcript" in r.stderr
+    assert "3/3" not in r.stdout
+
+
+def test_cli_two_copies_of_one_session_are_one_run_not_two(tmp_path):
+    # Given a transcript copied to a second name -- two files, one session
+    original = TESTDATA / "cc-no-delegation.jsonl"
+    a = tmp_path / "a.jsonl"
+    b = tmp_path / "b.jsonl"
+    a.write_bytes(original.read_bytes())
+    b.write_bytes(original.read_bytes())
+    # When both are judged as if they were two runs
+    r = run_cli(str(a), str(b), "--expect", "start")
+    # Then the duplicated session is named and the verdict is FAIL
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "a.jsonl, b.jsonl" in r.stdout and "one run, not 2" in r.stdout
+
+
+def test_two_genuinely_different_sessions_are_two_runs(tmp_path):
+    # Given two transcripts recording two different sessions
+    a = TESTDATA / "cc-no-delegation.jsonl"
+    b = TESTDATA / "cc-dev-session.jsonl"
+    # When they are loaded together
+    found = ct.load_runs([str(a), str(b)], ct.parse_cc_run)
+    # Then nothing is flagged: the session ids differ
+    assert found.duplicates == []
+    assert len(found.runs) == 2
+
+
+def test_transcripts_that_record_no_session_id_are_never_called_duplicates(tmp_path):
+    # Given two hand-built transcripts with no sessionId field at all
+    a = marked(tmp_path, "a.jsonl", START)
+    b = marked(tmp_path, "b.jsonl", START)
+    # When they are loaded together
+    found = ct.load_runs([str(a), str(b)], ct.parse_cc_run)
+    # Then the check simply does not apply, rather than firing on "" == ""
+    assert found.duplicates == [] and found.gaps == []
+    assert all(run.session_ids == set() for run in found.runs)
+
+
+def test_the_session_id_comes_from_the_transcript_itself():
+    # Given a fixture written with the envelope a real CC transcript has
+    run = ct.parse_cc_run(DATA_NO_DELEGATION)
+    # When the run is parsed
+    # Then the session it records is available to compare against other runs
+    assert run.session_ids == {"3f1c8a52-0d47-4c1b-9a6e-70b2d5e41c88"}
+
+
 @pytest.mark.parametrize("args", [
     [],                                  # neither a path nor --latest
     ["x.jsonl", "--latest", "1"],        # both
@@ -1224,14 +1420,14 @@ def test_cli_exits_2_on_bad_usage(args):
 
 
 def test_cli_reports_parse_warnings_and_marker_anomalies(tmp_path):
-    # Given a transcript with a corrupt line and two start markers
+    # Given a transcript with a corrupt line and a near-miss marker
     p = tmp_path / "s.jsonl"
     p.write_text(json.dumps(assistant(text(START))) + "\n{bad\n"
-                 + json.dumps(assistant(text(START))) + "\n", encoding="utf-8")
+                 + json.dumps(assistant(text("**" + START + "**"))) + "\n", encoding="utf-8")
     # When the CLI runs
     r = run_cli(str(p))
     # Then both anomalies appear in the report
-    assert "2 start marker(s)" in r.stdout and "not valid JSON" in r.stdout
+    assert "malformed BPTRACE line" in r.stdout and "not valid JSON" in r.stdout
 
 
 def test_cli_latest_says_so_when_no_run_matches_the_theme(tmp_path):
@@ -1301,11 +1497,16 @@ def test_the_help_text_carries_no_project_specific_example():
 QUOTED_SHAPES = {
     "four space indented code block":
         "The workflow says:\n\n    " + STEP1 + "\n\nThat is all.",
+    # The marker sits flush left on purpose: if it were indented under the list
+    # item, the four-space rule would hide it and this case would prove nothing
+    # about "- ```" opening a fence.
     "fence inside a list item":
-        "- Example:\n  - ```\n    " + STEP1 + "\n    ```\n",
+        "- the workflow must print\n- ```\n" + STEP1 + "\n```\n- and nothing else\n",
+    # Quoting a file that itself contains fences needs a *longer* outer fence,
+    # which is what CommonMark requires and what the parser follows.
     "fence nested inside a wider quotation":
-        "Here is the agent file:\n\n```\n## OUT\n\n```json\n{\"status\": \"ok\"}\n```\n"
-        + STEP2 + "\n```\n\nThat is the whole file.",
+        "Here is the agent file:\n\n````\n## OUT\n\n```json\n{\"status\": \"ok\"}\n```\n"
+        + STEP2 + "\n````\n\nThat is the whole file.",
     "html comment":
         "<!-- hidden note\n" + STEP1 + "\nstill hidden -->\n",
 }
@@ -1331,6 +1532,81 @@ def test_a_marker_in_quoted_text_is_recorded_rather_than_dropped(tmp_path, shape
     # Then "not evidence" is not the same as "never happened"
     assert len(run.quoted_markers) == 1
     assert "BPTRACE" in run.quoted_markers[0].detail["text"]
+
+
+def test_an_over_indented_closing_fence_does_not_close_the_outer_fence(tmp_path):
+    # Given a quoted file body that itself contains a deeply indented ```
+    body = "Here is the file:\n\n```\n        ```\n" + STEP1 + "\n```\nDone."
+    # When the lines are classified
+    quoted = dict(ct.evidence_lines(body))
+    # Then the indented fence is content (CommonMark allows at most 3 spaces),
+    # so it cannot promote the rest of the quotation back to evidence
+    assert quoted[STEP1] is True
+    assert quoted["Done."] is False
+    # and the parser agrees
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(body))])
+    run = ct.parse_cc_run(p)
+    assert run.step_markers == [] and len(run.quoted_markers) == 1
+
+
+def test_two_code_blocks_with_info_strings_do_not_swallow_what_follows(tmp_path):
+    # Given the before/after shape an assistant writes all the time: two fenced
+    # blocks in a row, both carrying an info string, then the real marker
+    body = ("before\n```python\nprint(1)\n```python\nprint(2)\n```\n" + STEP1)
+    # When parsed
+    p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(body))])
+    run = ct.parse_cc_run(p)
+    # Then the info string decided nothing and the marker after the last fence
+    # is still the model's own output
+    assert [m.detail["step"] for m in run.step_markers] == ["1"]
+    assert run.quoted_markers == []
+
+
+def test_only_a_longer_fence_nests_inside_an_open_one(tmp_path):
+    # Given an outer fence of four backticks holding an ordinary ```json block
+    outer = "````\n```json\n{}\n```\n" + STEP1 + "\n````\n" + STEP2
+    # When the lines are classified
+    quoted = dict(ct.evidence_lines(outer))
+    # Then the inner three-backtick fence neither closed nor nested inside the
+    # wider one, and only the line past the four-backtick close is evidence
+    assert quoted[STEP1] is True and quoted[STEP2] is False
+    # and a longer fence that cannot be read as a close does nest, so it takes
+    # its own close before the outer one can end
+    nested = dict(ct.evidence_lines(
+        "```\n````json\nx\n````\n" + STEP1 + "\n```\n" + STEP2))
+    assert nested[STEP1] is True and nested[STEP2] is False
+
+
+def test_a_list_marker_before_a_fence_still_opens_it(tmp_path):
+    # Given a fence introduced by a list marker whose body is NOT indented, so
+    # the four-space rule cannot be what is hiding the marker
+    body = "- the workflow must print\n- ```\n" + STEP1 + "\n```\n" + STEP2
+    # When the lines are classified
+    quoted = dict(ct.evidence_lines(body))
+    # Then "- ```" opened the fence and the bare ``` closed it
+    assert not STEP1.startswith(" ")
+    assert quoted[STEP1] is True and quoted[STEP2] is False
+    # and the parser records the quoted one and counts only the other
+    run = ct.parse_cc_run(write_jsonl(tmp_path / "s.jsonl", [assistant(text(body))]))
+    assert [m.detail["step"] for m in run.step_markers] == ["2"]
+    assert [m.detail["text"] for m in run.quoted_markers] == [STEP1]
+
+
+def test_a_marker_inside_a_thinking_block_is_not_evidence(tmp_path):
+    # Given an assistant turn whose thinking block "emits" both markers and
+    # whose visible text says nothing
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "signature": "sig",
+             "thinking": START + "\n" + STEP1 + "\nthat is what I will print"},
+            text("Working on it.")]}},
+    ])
+    # When parsed
+    run = ct.parse_cc_run(p)
+    # Then private reasoning is not output: saying the marker is not emitting it
+    assert run.start_markers == [] and run.step_markers == []
+    assert run.malformed_markers == [] and run.quoted_markers == []
+    assert ct.evaluate(run, [ct.parse_expectation("start")], []).passed is False
 
 
 def test_an_inline_code_span_does_not_open_a_fence(tmp_path):
@@ -1428,6 +1704,37 @@ def test_a_quoted_marker_is_surfaced_as_an_anomaly(tmp_path):
     assert not result.passed
     assert any("quoted" in a for a in result.anomalies)
     assert STEP1 in " ".join(result.anomalies)
+
+
+def test_announcing_a_marker_before_emitting_it_is_not_an_anomaly(tmp_path):
+    # Given the thing a well-behaved run most naturally does: show the line it
+    # is about to print, inside a fence, and then actually print it
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)),
+        assistant(text("I will now emit:\n\n```\n" + STEP1 + "\n```\n")),
+        assistant(text(STEP1)),
+    ])
+    run = ct.parse_cc_run(p)
+    # When it is checked
+    result = ct.evaluate(run, [ct.parse_expectation("step=1:actor=main")], [])
+    # Then the quotation is not held against a run that really did emit one
+    assert result.passed, result.failures + result.anomalies
+    assert result.anomalies == []
+    # and the quotation is still on the record, just not as damage
+    assert len(run.quoted_markers) == 1
+
+
+def test_a_quoted_marker_is_still_an_anomaly_when_only_the_quotation_exists(tmp_path):
+    # Given a run that quoted a step marker of a kind it never actually emitted
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)), assistant(text("```\n" + STEP1 + "\n```")),
+    ])
+    run = ct.parse_cc_run(p)
+    # When it is evaluated
+    result = ct.evaluate(run, [ct.parse_expectation("start")], [])
+    # Then the "it is only quoted" finding is exactly the suspicion that remains
+    assert not result.passed
+    assert any("quoted" in a for a in result.anomalies)
 
 
 def test_a_quoted_malformed_line_is_just_noise(tmp_path):
@@ -1682,10 +1989,8 @@ def test_an_optional_count_is_declared_optional():
 
 # --- --allow-anomalies through the CLI ----------------------------------------
 def test_cli_allow_anomalies_turns_a_damaged_run_into_a_pass(tmp_path):
-    # Given a run that meets its expectations but emitted two start markers
-    p = write_jsonl(tmp_path / "s.jsonl", [
-        assistant(text(START)), assistant(text(START)), assistant(text(STEP1)),
-    ])
+    # Given a run that meets its expectations but also emitted a malformed marker
+    p = damaged_run(tmp_path)
     # When it is checked without the flag
     strict = run_cli(str(p), "--expect", "step=1:actor=main")
     # Then the damaged evidence fails it
@@ -1693,7 +1998,7 @@ def test_cli_allow_anomalies_turns_a_damaged_run_into_a_pass(tmp_path):
     # and with the flag it passes, with the anomaly still on the record
     lax = run_cli(str(p), "--expect", "step=1:actor=main", "--allow-anomalies")
     assert lax.returncode == 0, lax.stdout + lax.stderr
-    assert "2 start marker(s)" in lax.stdout
+    assert "malformed BPTRACE line" in lax.stdout
 
 
 def test_cli_allow_anomalies_does_not_excuse_a_missing_run(tmp_path):
@@ -1744,7 +2049,23 @@ def test_cli_json_carries_the_discovery_record(tmp_path):
     assert data["gaps"]
 
 
-# --- recorded real transcripts (committed fixtures) ---------------------------
+# --- committed fixtures (real transcript shape, composed contents) ------------
+@pytest.mark.parametrize("path", DATA_FILES, ids=lambda p: p.name)
+def test_fixtures_carry_the_outer_fields_a_real_transcript_has(path):
+    # Given a committed fixture
+    entries = [json.loads(line) for line in
+               path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    turns = [e for e in entries if e.get("type") in ("user", "assistant")]
+    # When its envelope is inspected
+    # Then it is the CC envelope, not a bare {"type", "message"} pair -- the
+    # parser is exercised against the shape it will actually meet
+    assert turns
+    for entry in turns:
+        for key in ("uuid", "parentUuid", "timestamp", "sessionId", "isSidechain",
+                    "userType", "cwd", "version", "gitBranch"):
+            assert key in entry, (path.name, key, entry.get("type"))
+
+
 def test_recorded_run_without_delegation_matches_the_transcript():
     # Given the recorded run that did every step itself
     run = ct.parse_cc_run(DATA_NO_DELEGATION)
@@ -1801,6 +2122,33 @@ def test_recorded_delegating_run_emitted_both_step_markers_from_the_parent():
     assert not result.passed
 
 
+def test_recorded_untyped_delegation_still_names_the_agent_it_called():
+    # Given the fixture in the shape 6 of this machine's 44 real delegations
+    # have: an Agent tool_use with no subagent_type, plus a .meta.json
+    run = ct.parse_cc_run(DATA_UNTYPED_DELEGATION)
+    # When parsed
+    assert run.warnings == []
+    # Then the delegation is attributable from both sides at once
+    assert [d.detail["to"] for d in run.delegations] == ["techtest-echo"]
+    assert [(m.detail["step"], m.origin) for m in run.step_markers] == [
+        ("1", "main"), ("2", "subagent:techtest-echo")]
+
+
+def test_recorded_untyped_delegation_passes_the_stage_b_expectations():
+    # Given the same fixture and the full stage-B recipe from the docstring
+    run = ct.parse_cc_run(DATA_UNTYPED_DELEGATION)
+    ordered = [ct.parse_expectation(s) for s in [
+        "start:theme=neon night,wf=techtest.md",
+        "step=1:actor=main,origin=main",
+        "delegate:to=techtest-echo",
+        "step=2:actor=techtest-echo,origin=subagent:techtest-echo"]]
+    counted = [ct.parse_count_expectation(s) for s in ["start=1", "delegate=1"]]
+    # When it is judged
+    result = ct.evaluate(run, ordered, counted)
+    # Then `delegate:to=` and `origin=subagent:` no longer contradict each other
+    assert result.passed, result.failures + result.anomalies
+
+
 def test_recorded_dev_session_is_not_mistaken_for_a_run():
     # Given a recorded development session: marker text in tool results, tool inputs,
     # prose, fenced quotations, indented blocks and Japanese discussion of the
@@ -1811,6 +2159,18 @@ def test_recorded_dev_session_is_not_mistaken_for_a_run():
     assert run.start_markers == [] and run.step_markers == []
     # and the Japanese prose about BPTRACE is not mistaken for a failed marker
     assert run.malformed_markers == []
+
+
+def test_recorded_dev_session_does_not_count_its_thinking_block():
+    # Given the same session, whose thinking block spells both markers out
+    blob = DATA_DEV_SESSION.read_text(encoding="utf-8")
+    assert '"thinking"' in blob and "BPTRACE step=1 out actor=main" in blob
+    run = ct.parse_cc_run(DATA_DEV_SESSION)
+    # When parsed
+    # Then the reasoning is not output, and is not even recorded as a quotation
+    thought = [m for m in run.quoted_markers if m.line == len(blob.splitlines())]
+    assert thought == []
+    assert run.start_markers == [] and run.step_markers == []
 
 
 def test_recorded_dev_session_still_records_what_it_quoted():
