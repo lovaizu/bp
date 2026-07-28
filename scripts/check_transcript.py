@@ -819,6 +819,19 @@ def _nearby(run: Run, expectation: Expectation) -> str:
     return "; observed: " + (" / ".join(seen) if seen else "nothing of that kind")
 
 
+def _marker_identity(kind: str, detail: dict[str, str]):
+    """What makes two markers "the same one", for judging a quotation against
+    what was genuinely emitted.
+
+    A quoted step=2 is not vindicated by step=1 having really happened -- it
+    must be that exact step, by that exact actor. A quoted start marker
+    likewise needs a real start of that exact theme.
+    """
+    if kind == MARKER_STEP:
+        return (kind, detail.get("step"), detail.get("actor"))
+    return (kind, detail.get("theme"))
+
+
 def evaluate(run: Run, ordered, counted, allow_anomalies: bool = False) -> Result:
     """Judge a parsed run against the expectations it was given, and nothing else.
 
@@ -835,12 +848,17 @@ def evaluate(run: Run, ordered, counted, allow_anomalies: bool = False) -> Resul
 
     for marker in run.malformed_markers:
         anomalies.append(f"malformed BPTRACE line at {marker.describe()}")
-    # Quoting a marker is only suspicious when nothing of that kind was ever
+    # Quoting a marker is only suspicious when that exact marker was never
     # really emitted: "here is the line I am about to print", followed by
-    # printing it, is what a well-behaved run looks like.
-    emitted = {event.kind for event in run.events}
+    # printing it, is what a well-behaved run looks like. Some *other* marker
+    # of the same kind having been emitted for real does not vindicate it --
+    # a fabricated step=2 is still fabricated even if step=1 really happened.
+    emitted_identities = {_marker_identity(MARKER_START, m.detail) for m in run.start_markers}
+    emitted_identities |= {_marker_identity(MARKER_STEP, m.detail) for m in run.step_markers}
     for marker in run.quoted_markers:
-        if marker.detail.get("as") in emitted:
+        parsed = marker_from_line(marker.detail.get("text", ""))
+        identity = _marker_identity(*parsed) if parsed else None
+        if identity in emitted_identities:
             continue
         anomalies.append(
             f"BPTRACE marker only appears inside quoted text, so it is not "
@@ -1041,10 +1059,13 @@ def _run(args) -> int:
         raise TranscriptError(found.excluded[0].reason)
 
     results = [evaluate(run, ordered, counted, args.allow_anomalies) for run in found.runs]
-    # A gap in the sample is not an anomaly to tolerate; it is missing evidence,
-    # and --allow-anomalies does not reach it.
-    gaps = found.gaps if checked else []
-    passed = all(r.passed for r in results) and not gaps
+    # A gap in the sample -- including a duplicate session -- is real evidence
+    # about the sample and is reported whether or not a verdict was asked for.
+    # It is not an anomaly to tolerate, either: it is missing evidence, and
+    # --allow-anomalies does not reach it. Only the verdict itself stays gated
+    # on `checked`, so report-only mode keeps its exit 0 / `passed: null`.
+    gaps = found.gaps
+    passed = all(r.passed for r in results) and not (checked and gaps)
 
     if args.json:
         # No expectation, no verdict: `true` here would read as "it was checked
