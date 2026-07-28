@@ -245,7 +245,7 @@ def markers_in_text(text: str) -> Iterator[tuple[str, dict[str, str]]]:
         if not quoted:
             yield kind, detail
         elif kind in (MARKER_START, MARKER_STEP):
-            yield MARKER_QUOTED, {"text": line.strip(), "as": kind}
+            yield MARKER_QUOTED, {"text": line.strip(), "as": kind, "detail": detail}
 
 
 # --------------------------------------------------------------------------- #
@@ -825,11 +825,14 @@ def _marker_identity(kind: str, detail: dict[str, str]):
 
     A quoted step=2 is not vindicated by step=1 having really happened -- it
     must be that exact step, by that exact actor. A quoted start marker
-    likewise needs a real start of that exact theme.
+    likewise needs a real start of that exact theme AND that exact wf --
+    wf is just as much a first-class part of a start marker's identity as
+    theme is (the `start` selector accepts both, and a start marker always
+    carries both).
     """
     if kind == MARKER_STEP:
         return (kind, detail.get("step"), detail.get("actor"))
-    return (kind, detail.get("theme"))
+    return (kind, detail.get("theme"), detail.get("wf"))
 
 
 def evaluate(run: Run, ordered, counted, allow_anomalies: bool = False) -> Result:
@@ -856,8 +859,9 @@ def evaluate(run: Run, ordered, counted, allow_anomalies: bool = False) -> Resul
     emitted_identities = {_marker_identity(MARKER_START, m.detail) for m in run.start_markers}
     emitted_identities |= {_marker_identity(MARKER_STEP, m.detail) for m in run.step_markers}
     for marker in run.quoted_markers:
-        parsed = marker_from_line(marker.detail.get("text", ""))
-        identity = _marker_identity(*parsed) if parsed else None
+        quoted_kind = marker.detail.get("as")
+        quoted_detail = marker.detail.get("detail")
+        identity = _marker_identity(quoted_kind, quoted_detail) if quoted_kind else None
         if identity in emitted_identities:
             continue
         anomalies.append(
