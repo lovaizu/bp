@@ -302,3 +302,46 @@ a55fb40d : PASS
 
 **このラウンドで意図的に対応しなかったこと（スコープ外、既存の記載どおり）**:
 - fix round 2 の節に記載した「同一 id への衝突で2枚同時に開いたフレームのうち、より新しい方が閉じた後により古い方の本物の completion が届くと stray/duplicate と誤判定される」複合ギャップは、今回のラウンドでは意図的に手を付けていない。２つの敵対的な前提（id の衝突が起きる、かつその後に古い方の completion が独立して届く）が重なる必要があり実現性が低いこと、また誤判定時も `never closed` 系の異常は残り診断が完全に沈黙するわけではないことから、レビューで「ドキュメント化された既知の制限として出荷可能」と判断済みであり、この判断は変えていない。今回のラウンドで修正したのは、指示書が指摘した「診断信号がゼロになる」汎用 TOOL 種別の引数比較の穴のみである。
+
+## GHC変換・チェックスクリプト拡張: コーディネーターによるレビュー総括（2026-07-28）
+
+**スコープ**: task #1 Step「安定したパターンをGHCへ変換し、GHCでも同様に3回、チェックスクリプト（GHC transcript対応を追加）で確認する」のうち、**コード実装側**（`check_transcript.py` の `--platform ghc` 対応、`.github/prompts/techtest.prompt.md`・`.github/agents/techtest-echo.agent.md` の移植）。**GHC 側での実際のコールドセッション3回実行・実測判定はこのスコープ外**（ユーザーが VS Code + GitHub Copilot Chat で行う必要があり、本セッション内では実行できない）。
+
+**経緯**: 実装（コミット `9d197b3`）→ QA/Craft/Verification 独立レビュー1巡目（3人とも FAIL、out-of-order completion の無警告破損・toolCallId 衝突での無警告消失の2件 Critical を独立に発見）→ fix round 1（`b6ff278`）→ 再レビュー（QA/Craft/Verification 独立に同一の新規ギャップ「id がまだ開いている間の再利用」を発見、3人とも FAIL）→ fix round 2（`44a0b60`、残存ギャップを「実現性が低く、かつ非沈黙」と明示的に受容も1点セット）→ QA再レビュー（round 2 の仕組み自体の穴＝汎用 TOOL 種別での引数比較無効を新規発見、FAIL）→ fix round 3（`17ee89b`）→ 最終レビュー（独自フィクスチャで再現・fix確認、READY TO CHECK OFF）。合計3回の fix round（cap 3 を使い切り）。
+
+**コーディネーター自身の直接確認**（レビューエージェントへの委託とは別に、このセッション内で実行して確認）:
+- `python3 -m pytest scripts/test_check_transcript.py -q` → 274 passed, 1 skipped（各ラウンドで実行し数値が申告と一致することを確認: round1後 267、round2後 272、round3後 274）
+- `coverage combine . scripts` を正しいレシピ（`COVERAGE_PROCESS_START=$PWD/.coveragerc`）で実行 → 762 stmts / 0 miss、336 branch / 0 partial、100%/100%（round3後の最終値。自分の1回目の実行では `COVERAGE_PROCESS_START` を付け忘れて 84% という誤った低い値が出たため、正しいレシピで再実行して確認した）
+- fix round 1・round 2・round 3 それぞれの「修正した」と主張する具体的な不具合を、独自の手書きフィクスチャで再現・再確認（reused-id、out-of-order completion、reuse-while-open、generic tool 引数比較）
+- `--platform ghc` の CLI 動作を `scripts/testdata/ghc-*.jsonl` に対して実行し、start/step/delegate イベントと origin が期待通りであることを確認
+- `.github/prompts/techtest.prompt.md`・`.github/agents/techtest-echo.agent.md` を読み、`docs/cross-platform-agent-design.md` §6 の変換規則（ファイル配置・フロントマター・ツール名・本文の呼び出し文言のみ変更、BPTRACE行とIN/OUT契約は不変）と突き合わせて一致を確認
+
+## QA Expert Review
+
+| Aspect | Verdict | Evidence / Improvement |
+|---|---|---|
+| Verification approach meaningful to the objective (checks the right thing, not just "passed") | OK | 独立レビュー3巡・fix 3ラウンドを通じて、QAは一貫して「テストが通ること」ではなく「実際に生成した敵対的フィクスチャで正しい judgment が出るか」を基準にした。1巡目・2巡目でそれぞれ新規の Critical 級ギャップを発見し、3巡目で「現実的（実際に正しく動作するプラットフォームで起こり得るか）」と「非沈黙（異常シグナルが残るか）」という2軸の基準を明示して残存ギャップを受容可能と判定した。カバレッジ100%が3回とも実際の欠陥を素通りしていたことを踏まえ、カバレッジではなく再現実行を判定根拠にした点が本プロジェクトのD-9原則と一致している |
+
+## Expert Reviews (axes the task needs)
+
+### Craft Expert (coding)
+
+| Aspect | Verdict | Evidence / Improvement |
+|---|---|---|
+| Medium-specific best practice | OK（軽微な指摘1件は反映なし、影響小） | 共有レイヤー（`Event`/`Run`/`finalize_run`/`markers_in_text`）を正しく再利用し重複実装なし。エラーハンドリング・`isinstance` 防御はCC側の作法と一致。唯一の指摘（`toolRequests[]`/`tool.execution_start` の2箇所に分かれた重複ロジックを共有ヘルパーに切り出すべき）は fix round 2/3 でも未反映のまま残っているが、正しさには影響しない stylistic nit と判断し、これ以上のラウンドは費やさない |
+| Consistency with existing style | OK | ドキュストリングの語り口（設計判断の理由を書く）・命名規則（`_ghc_*` プレフィックス）・GHCポート2ファイルのフロントマター/本文変換が §6 と完全一致することを確認済み |
+
+### Verification Expert (test)
+
+| Aspect | Verdict | Evidence / Improvement |
+|---|---|---|
+| Artifact actually checked (tests run / claims verified / flow traced) | OK | 3巡とも「テストが通る」ではなく実際に手書きフィクスチャを走らせてコード実行結果を確認する方式を徹底。coverage数値もコーディネーター自身を含め複数回独立に再現された |
+| Coverage (edge cases / claims / steps) | OK（1件の複合ギャップは受容済みの既知の限界として残存） | out-of-order completion・reuse-after-close・reuse-while-open（bash/runSubagent双方・非最外層含む）・stray/duplicate completion・汎用ツール種別での引数衝突、をそれぞれ専用テストで固定。唯一残る「id衝突で2枚同時に開いたフレームのうち、より新しい方が閉じた後に古い方の本物のcompletionが届く」複合ケースは、二重の敵対的前提を要し実現性が低く、かつ発生時も`never closed`系の異常が残り完全沈黙ではないため、修正コストに見合わないと判断し `checks/task-1.md` に明記のうえ受容 |
+
+## Overall Verdict
+
+- Self-check: OK（実装エージェントの自己申告3件、いずれもコーディネーターが直接再現して確認済み）
+- QA: OK（3巡のレビューを経て収束、詳細は上表）
+- Craft expert: OK（軽微な nit 1件残存、正しさに影響なし）
+- Verification expert: OK（1件の低リスク複合ギャップを既知の限界として明示的に受容）
+- Ready to check off: **Yes — ただしコード実装側のみ**。task #1 のこの Step には GHC 側でのコールドセッション3回実測がまだ含まれており、それはユーザー操作が必要（`steering.md` Rules）なため未完了。`steering.md` 側は「コード実装完了・実測待ち」として更新し、Step のチェックボックス自体はまだ付けない
