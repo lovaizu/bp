@@ -268,6 +268,13 @@ class Event:
     line: int
     name: str = ""  # platform tool name -- display only, never judged on
     detail: dict[str, str] = field(default_factory=dict)
+    # GHC-only: the tool's real, un-narrowed arguments dict, carried purely so
+    # `_ghc_same_call` can compare *actual* arguments for every GHC tool kind
+    # -- including the generic TOOL bucket, whose `detail` is always {} --
+    # rather than only for the two tool names special-cased in
+    # `_ghc_tool_event`. Internal only: never part of `detail`, never
+    # surfaced in --verbose/--json output, unused by the CC parser.
+    call_args: dict = field(default_factory=dict)
 
     def describe(self) -> str:
         where = f"{self.origin} {Path(self.source).name}:{self.line}"
@@ -544,7 +551,7 @@ def _ghc_tool_event(name, arguments):
     return TOOL, {}
 
 
-def _ghc_same_call(prior, name, detail):
+def _ghc_same_call(prior, name, arguments):
     """True iff the Event already recorded for a toolCallId describes the
     exact same call as this new sighting of that id.
 
@@ -553,14 +560,19 @@ def _ghc_same_call(prior, name, detail):
     arguments for one real call, so that identity -- not just the id -- is
     what tells "the legitimate second announcement of the still-open call
     with this id" apart from "a different call colliding with a still-open
-    id", which should never legitimately happen. `detail` must be the
-    *pre-`id`-key* detail dict for the new sighting, so it is comparable to
-    `prior.detail` with its own `id` entry stripped.
+    id", which should never legitimately happen.
+
+    Comparison is against the tool's real `arguments` dict (carried on the
+    Event as `call_args`), not the narrower `detail` dict `_ghc_tool_event`
+    derives from it. `detail` only carries a hand-picked field or two for
+    `runSubagent`/`runInTerminal` and is unconditionally `{}` for every other
+    GHC tool name (the generic TOOL kind: `readFile`, `writeFile`,
+    `semanticSearch`, ...), so comparing `detail` alone cannot tell two
+    genuinely different TOOL-kind calls apart -- it would silently merge them
+    with zero diagnostic. Comparing the real arguments makes the distinction
+    meaningful for every GHC tool name, special-cased or not.
     """
-    if prior.name != name:
-        return False
-    prior_detail = {k: v for k, v in prior.detail.items() if k != "id"}
-    return prior_detail == detail
+    return prior.name == name and prior.call_args == arguments
 
 
 def _ghc_scan(path, warnings, session_ids=None) -> list:
@@ -687,7 +699,7 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
                     kind, detail = _ghc_tool_event(name, arguments)
                     prior = calls.get(tool_call_id)
                     if prior is not None and tool_call_id not in closed_ids \
-                            and _ghc_same_call(prior, name, detail):
+                            and _ghc_same_call(prior, name, arguments):
                         continue  # duplicate announcement of the same still-open call
                     if prior is not None:
                         if tool_call_id in closed_ids:
@@ -705,7 +717,8 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
                                 f"not a duplicate")
                         closed_ids.discard(tool_call_id)
                     detail["id"] = tool_call_id
-                    event = Event(0, kind, origin, str(path), line_no, name=name, detail=detail)
+                    event = Event(0, kind, origin, str(path), line_no, name=name, detail=detail,
+                                  call_args=arguments)
                     events.append(event)
                     calls[tool_call_id] = event
 
@@ -718,7 +731,7 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
             prior = calls.get(tool_call_id) if tool_call_id else None
             is_dup = (bool(tool_call_id) and prior is not None
                       and tool_call_id not in closed_ids
-                      and _ghc_same_call(prior, name, detail))
+                      and _ghc_same_call(prior, name, arguments))
             if prior is not None and not is_dup:
                 if tool_call_id in closed_ids:
                     warnings.append(
@@ -736,7 +749,8 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
             event = prior if is_dup else None
             if event is None:
                 detail["id"] = tool_call_id
-                event = Event(0, kind, origin, str(path), line_no, name=name, detail=detail)
+                event = Event(0, kind, origin, str(path), line_no, name=name, detail=detail,
+                              call_args=arguments)
                 events.append(event)
                 if tool_call_id:
                     calls[tool_call_id] = event

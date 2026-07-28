@@ -279,3 +279,26 @@ a55fb40d : PASS
 - **同一 id が同時に2つ以上「本当に開いている」状態（今回の Finding A の衝突ケース）になった後、それぞれの completion をどちらに対応させるかは、id 以外の情報が transcript に一切無い以上、原理的に決定不能**。今回採用したのは「スタック探索は常にトップから、＝最も新しく push された・最もネストの深いインスタンスを優先して閉じる」という規約で、out-of-order completion の既存処理と同じ考え方の延長に過ぎない。実 GHC がこの前提と異なる closing 順序を意図している可能性は排除できない。
 - Finding B のゲート（`tool_call_id not in calls or tool_call_id in closed_ids`）は、id ごとに「現在のインスタンスが閉じているか」の1ビットしか見ていない。もし Finding A の衝突が起きて同じ id が指すフレームがスタックに2枚同時に乗っている状態で、より新しい方が閉じた**後**に、より古い（stale な）方の本物の completion が届いた場合、`closed_ids` は最新インスタンス基準で「既に閉じている」と判定されてしまい、この古い方の正当な completion を stray/duplicate と誤判定する可能性がある。この複合ケース（Finding A の衝突 + その後の stale 側の正当な close）は今回テストしておらず、意図的に埋めていない残存ギャップとして明示する。
 - 3人のレビュアーがそれぞれ独立に別の角度からこのスタック設計の穴を見つけてきたという実績自体が、「この id ライフサイクル管理の設計にはまだ見つかっていないコーナーケースがある」ことの経験的な証拠だと考えている。今回の2件の修正で「見つかっている指摘」は解消したが、この設計（`toolCallId` 文字列だけをキーにした簡易スタック）そのものに起因する未知の穴が今後も出てくる可能性は高いと見ており、「これで完全」という主張はしない。
+
+### GHC変換・チェックスクリプト拡張: レビュー指摘の修正（fix round 3 — 汎用ツール種別での引数比較）
+
+実装担当エージェントとして、コミット `44a0b60`（fix round 2）の `_ghc_scan`/`_ghc_same_call` に対する独立再レビューが確認した1件の残存ギャップ（Critical 相当）を修正した自己申告。QA/Craft/Verification の Overall Verdict は付けない。TDD で、先に失敗するテストを書いて `44a0b60` 時点のコードに対して実際に失敗することを確認してから実装を直した。
+
+**変更ファイル**: `scripts/check_transcript.py`（`Event` データクラスに内部専用フィールド `call_args` を追加、`_ghc_same_call` のシグネチャと比較対象を変更、`_ghc_scan` の3箇所の呼び出し元を更新）、`scripts/test_check_transcript.py`（GHC セクションに2件追加）。新規 testdata ファイルは追加していない。CC 側のコード・テスト・`.rn/blackpink-setlist-planner/steering.md` は無変更。
+
+**指摘内容（Critical, 汎用 TOOL 種別での引数比較が実質無効）**
+
+- Before（`44a0b60`）: `_ghc_tool_event(name, arguments)` は `runSubagent`（`detail={"to": ...}`）と `runInTerminal`（`detail={"command": ...}`）の2つの特別扱いのツール名にしか意味のある `detail` を詰めておらず、それ以外の全ての GHC ツール名（`readFile`／`writeFile`／`editFile`／`semanticSearch` 等）は無条件に汎用 `TOOL` 種別・`detail={}` に落ちる。一方 `_ghc_same_call(prior, name, detail)` は「同一呼び出しの正当な重複通知」か「まだ開いている id への別呼び出しの衝突」かを `detail` の一致で判定していたため、汎用 TOOL 種別に対しては常に `{} == {}` を比較しているに過ぎず、実引数が何であれ必ず「一致」と判定されていた。結果、`readFile("a.md")` が開いたまま（未完了）、無関係な `readFile("totally-different-file.md")` が同じ id を使い回しても「正当な重複通知」と誤認され、2件目の呼び出し自身のイベントが警告0件のまま完全に消える。fix round 2 が解消した「id 再利用」の仕組み全体が守ろうとしていた性質そのものが、汎用 TOOL 種別に関しては最初から機能していなかった。
+- 実際に `44a0b60` のコードで確認: 上記の `readFile` 差し替えフィクスチャを流すと `len(run.tool_uses) == 1`（2件目が消滅）かつ `run.warnings == []`（衝突を示す診断が一切出ない）ことを再現した。これは fix round 2 が「disclosed な残存ギャップ」として明示した「complete が古い方の生きたフレームを誤って stray/duplicate 扱いする」ケースより悪い ── あちらは最低限 `never closed` 系の異常が残るが、こちらは診断信号そのものがゼロになる。
+- After: `Event` データクラスに内部専用フィールド `call_args`（実引数の生 dict、`detail` とは別物で `--verbose`/`--json` の出力（`_run_dict` の `events[].detail`）には一切乗らない）を追加。`_ghc_same_call(prior, name, arguments)` は比較対象を `detail`（`id` キーを除いた派生済みの狭い部分集合）から、Event に保存済みの実引数 `prior.call_args` と新規呼び出しの生の `arguments` dict の直接比較に変更。`_ghc_tool_event` 自体（`(kind, detail)` を返す公開シグネチャ・`detail` の中身）は無変更 ── `detail` は表示用途のまま据え置き、比較専用のデータだけを別チャンネルで運ぶ設計にした。既存の GHC テストを全て確認した限り、GHC 自身の二重通知（`toolRequests[]` → 自身の `tool.execution_start`）は実在の全フィクスチャで常に同一の `arguments` dict を送っており（例: `runSubagent` の `name`+`prompt` を含む full フィクスチャでも両者が完全一致）、比較対象を生引数に変えても `runSubagent`/`runInTerminal` を含む既存の重複判定はどれも壊れない。
+  - `detail` に生引数をそのまま混ぜ込む案（`_ghc_tool_event` 自体を拡張して TOOL 種別にも `detail` を持たせる）ではなく、Event の内部専用フィールドとして分離する案を採った。理由: 汎用 TOOL 種別の `detail` は今まで一貫して `{}` であり、これまで `--json`/`--verbose` の消費側（テストも含め）はその形を前提にしていない ── 公開の出力形を、比較ロジックのための都合で黙って変えるのは指示書が明示的に避けたいとしていたことであり、「表示用の情報を増やす」ことと「同一呼び出し判定の精度を上げる」ことは別の変更として扱うのが筋が良いと判断した。表示側の充実（例えば `readFile` の `path` を `detail` にも出す）は、今回の指摘とは独立した将来の改善として残す。
+- Pinning tests（いずれも `44a0b60` に対して個別に失敗/成功することを確認済み）:
+  - `test_ghc_reused_toolCallId_while_still_open_with_different_arguments_to_a_generic_tool_is_not_merged` ── 上記の再現フィクスチャそのもの。2件目の `readFile` イベントが `run.tool_uses` に残ること（`len == 2`）、衝突警告（`"tc1"` と `"collides"` を含む）が出ることを固定。`44a0b60` に対して `len(run.tool_uses) == 1` で確実に失敗することを確認済み
+  - `test_ghc_reused_toolCallId_while_still_open_with_identical_arguments_to_a_generic_tool_still_merges` ── 鏡像テスト。同じ `readFile`・同じ引数（`path="a.md"`）で id がまだ開いている間に再通知されるケースは、汎用 TOOL 種別でも引き続き1イベントに正しくマージされ、警告が0件であることを固定（過剰検出への逆振れがないことの確認）。このテストは `44a0b60` に対しても最初から成功する（既存の挙動を壊していないことの確認用）
+
+**再検証結果**:
+- `python3 -m pytest scripts/test_check_transcript.py -q` → **274 passed, 1 skipped**（skip は環境依存の opt-in `test_live_project_dir_can_be_scanned_without_crashing` のみ、既存テストは1件も壊れていない）
+- `rm -f .coverage .coverage.* scripts/.coverage.*; COVERAGE_PROCESS_START=$PWD/.coveragerc python3 -m coverage run -m pytest scripts/test_check_transcript.py; python3 -m coverage combine . scripts; python3 -m coverage report -m` → `scripts/check_transcript.py`: **762 stmts / 0 miss（行 100%）、336 branch / 0 partial（分岐 100%）**。fix round 2 終了時点（764 stmts / 338 branch、100%）から stmts/branch の数値が微減しているのは、`_ghc_same_call` の docstring 内で行っていた `detail` の `id` キー除去処理（コメント除く実質1行）が生引数比較への置き換えで不要になったため ── カバレッジは今回追加分も含め引き続き100%
+
+**このラウンドで意図的に対応しなかったこと（スコープ外、既存の記載どおり）**:
+- fix round 2 の節に記載した「同一 id への衝突で2枚同時に開いたフレームのうち、より新しい方が閉じた後により古い方の本物の completion が届くと stray/duplicate と誤判定される」複合ギャップは、今回のラウンドでは意図的に手を付けていない。２つの敵対的な前提（id の衝突が起きる、かつその後に古い方の completion が独立して届く）が重なる必要があり実現性が低いこと、また誤判定時も `never closed` 系の異常は残り診断が完全に沈黙するわけではないことから、レビューで「ドキュメント化された既知の制限として出荷可能」と判断済みであり、この判断は変えていない。今回のラウンドで修正したのは、指示書が指摘した「診断信号がゼロになる」汎用 TOOL 種別の引数比較の穴のみである。

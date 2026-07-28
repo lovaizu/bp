@@ -2865,6 +2865,68 @@ def test_ghc_reused_toolCallId_while_still_open_at_a_non_outermost_nesting_level
     assert len(never_closed) == 1 and "2 runSubagent" in never_closed[0]
 
 
+# --- GHC: same-call comparison must use real arguments, not just `detail`,   -
+# --- for the generic TOOL kind too (fix round 3) ----------------------------
+# `_ghc_tool_event` only ever fills in a meaningful `detail` for the two
+# special-cased tool names (`runSubagent` -> {"to": ...}, `runInTerminal` ->
+# {"command": ...}); every other GHC tool name -- `readFile`, `writeFile`,
+# `semanticSearch`, and so on -- falls through to the generic TOOL kind with
+# `detail = {}` unconditionally. `_ghc_same_call` used to compare `detail`,
+# so for the generic TOOL kind it was always comparing {} == {}: a genuinely
+# different call reusing a still-open id was indistinguishable from the
+# legitimate duplicate announcement, and got silently merged with zero
+# warning -- worse than the disclosed "never closed" gap, which at least
+# surfaces an anomaly.
+def test_ghc_reused_toolCallId_while_still_open_with_different_arguments_to_a_generic_tool_is_not_merged(
+        tmp_path):
+    # Given a readFile call that opens toolCallId "tc1" for "a.md" and never
+    # completes, followed -- before its own completion ever arrives -- by an
+    # unrelated readFile call that reuses that SAME id for a totally
+    # different path
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Reading a.", [ghc_tool_request("readFile", "tc1", path="a.md")]),
+        ghc_exec_start("readFile", "tc1", path="a.md"),
+        ghc_assistant("Reading something else, reusing the id.",
+                      [ghc_tool_request("readFile", "tc1",
+                                        path="totally-different-file.md")]),
+        ghc_exec_start("readFile", "tc1", path="totally-different-file.md"),
+        ghc_exec_complete("tc1"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the second call's own event survives -- it is not silently merged
+    # into the first just because the generic TOOL kind's `detail` is always
+    # {} regardless of the real (and here, genuinely different) arguments
+    assert len(run.tool_uses) == 2
+    assert [e.name for e in run.tool_uses] == ["readFile", "readFile"]
+    # And the collision is named as a warning, not silently absorbed
+    assert any("tc1" in w and "collides" in w for w in run.warnings)
+
+
+def test_ghc_reused_toolCallId_while_still_open_with_identical_arguments_to_a_generic_tool_still_merges(
+        tmp_path):
+    # Given a readFile call whose id is announced twice while STILL open --
+    # not yet completed -- with the exact SAME arguments both times: GHC's
+    # own legitimate double-announcement quirk, exercised here on a generic
+    # TOOL-kind name (not one of the two special-cased ones) to make sure
+    # comparing real arguments does not overcorrect into a false-positive
+    # collision warning for the case this whole mechanism must still allow
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Reading a.", [ghc_tool_request("readFile", "tc1", path="a.md")]),
+        ghc_exec_start("readFile", "tc1", path="a.md"),
+        ghc_assistant("Reading a again.",
+                      [ghc_tool_request("readFile", "tc1", path="a.md")]),
+        ghc_exec_complete("tc1"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it is still recognised as one event, not two, and no collision
+    # warning is raised for it
+    assert len(run.tool_uses) == 1
+    assert run.tool_uses[0].name == "readFile"
+    assert not any("tc1" in w for w in run.warnings)
+
+
 # --- GHC: stray/duplicate tool.execution_complete (fix round 2, Verification) -
 def test_ghc_a_stray_duplicate_completion_after_a_legitimate_reuse_is_reported_not_silently_accepted(
         tmp_path):
