@@ -544,6 +544,25 @@ def _ghc_tool_event(name, arguments):
     return TOOL, {}
 
 
+def _ghc_same_call(prior, name, detail):
+    """True iff the Event already recorded for a toolCallId describes the
+    exact same call as this new sighting of that id.
+
+    GHC's own double-announcement quirk (`toolRequests[]` then its own
+    `tool.execution_start`) always describes the same tool and the same
+    arguments for one real call, so that identity -- not just the id -- is
+    what tells "the legitimate second announcement of the still-open call
+    with this id" apart from "a different call colliding with a still-open
+    id", which should never legitimately happen. `detail` must be the
+    *pre-`id`-key* detail dict for the new sighting, so it is comparable to
+    `prior.detail` with its own `id` entry stripped.
+    """
+    if prior.name != name:
+        return False
+    prior_detail = {k: v for k, v in prior.detail.items() if k != "id"}
+    return prior_detail == detail
+
+
 def _ghc_scan(path, warnings, session_ids=None) -> list:
     """Turn one GHC jsonl file into events, resolving subagent origin inline.
 
@@ -561,7 +580,7 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
     the same `toolCallId` pops it again. A span still open at end of file is
     an anomaly, not a silent guess about where it would have closed.
 
-    Two anomalies in that scheme get their own handling rather than being
+    Three anomalies in that scheme get their own handling rather than being
     silently absorbed:
 
     * Out-of-order completion. A `tool.execution_complete` can carry a
@@ -578,25 +597,58 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
       of the file with no diagnostic at all, which is worse than a rule
       that is merely a documented simplification.
 
-    * `toolCallId` reuse. GHC does not promise a `toolCallId` is unique for
-      all time, only that it identifies one call while that call is open.
-      Once a call's `tool.execution_complete` has been seen, that id is
-      "closed"; a later sighting of the *same* id (in `toolRequests[]` or a
-      fresh `tool.execution_start`) is therefore a new, unrelated call
-      reusing the id, not a duplicate announcement of the old one. Treating
-      it as "already seen, skip" -- what the dedup-by-id logic did before --
-      silently drops the entire second call (including a delegation, with
-      no warning and no `delegate` event). Instead: once an id is closed,
-      the next sighting of it is recognised as a distinct event (its own
-      Event, its own possible origin-stack push) and a warning is recorded
-      naming the collision, so it is visible in anomalies even though it is
-      resolved automatically rather than left as a gap.
+    * `toolCallId` reuse -- after close, or while still open. GHC does not
+      promise a `toolCallId` is unique for all time, only that it identifies
+      one call while that call is open. The two announcements of one real
+      call (`toolRequests[]` then `tool.execution_start`) always describe
+      the *same tool with the same arguments* (`_ghc_same_call`), so that
+      identity, not just the id, is what a fresh sighting of a known id is
+      checked against:
+
+        - Same tool/arguments, id not yet closed: the ordinary duplicate
+          announcement this whole dedup mechanism exists to collapse.
+          Produces nothing new.
+        - Id already closed (its `tool.execution_complete` was seen since
+          it was last opened): a new, unrelated call has reused the id
+          after the earlier one finished. Recognised as a distinct event
+          (its own Event, its own possible origin-stack push); a warning
+          names the collision.
+        - Different tool/arguments while the id is still *open*: this
+          should never legitimately happen -- it means two unrelated calls
+          are colliding on one id before the first ever completed. Earlier
+          code conflated this with the first case above (same id, not yet
+          closed) and treated it as "just the duplicate announcement",
+          which silently dropped the second call's own event and, if the
+          stale first call was a `runSubagent`, pushed its cached Event's
+          origin frame onto the stack a second time. Now it is handled
+          exactly like reuse-after-close: a distinct event, a warning
+          naming the collision, and the stale call's own frame (already on
+          the stack from when it legitimately opened) is left untouched --
+          not duplicated, not merged with the new call.
+
+      Either way, once recognised as reuse/collision the id's `calls[]`
+      entry is replaced by the new sighting, so that call's *own* later
+      duplicate announcement (if GHC sends one) collapses against itself,
+      not against the stale call it displaced.
+
+    * Stray/duplicate completion. A `tool.execution_complete` is only ever
+      the close of *some* call that is currently open under that id --
+      either a plain call that has not yet completed, or (if it was a
+      `runSubagent`) a frame still on the stack. If the id is not currently
+      open at all -- its current instance already got a completion since it
+      was last opened, or the id was never seen as a call in the first
+      place -- this completion cannot be closing anything real; it is a
+      stray or duplicate and is reported as such rather than silently
+      accepted as a no-op success. This matters most right after a
+      legitimate reuse: an extra, unmatched completion for the id at that
+      point used to be indistinguishable from "nothing to do", when it
+      should be surfaced as an anomaly every time.
     """
     path = Path(path)
     events: list = []
     stack: list = [(None, MAIN)]  # (toolCallId or None, origin)
-    calls: dict = {}  # toolCallId -> the Event already emitted for it
-    closed_ids: set = set()  # toolCallIds whose tool.execution_complete has been seen
+    calls: dict = {}  # toolCallId -> the Event already emitted for its current instance
+    closed_ids: set = set()  # toolCallIds whose *current* instance has already completed
 
     for line_no, entry in _read_jsonl(path, warnings):
         if not isinstance(entry, dict):
@@ -629,20 +681,29 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
                             f"{path.name}: line {line_no}: toolRequests[] entry has no "
                             f"toolCallId, so it cannot be scoped or deduped; skipped")
                         continue
-                    prior = calls.get(tool_call_id)
-                    if prior is not None and tool_call_id not in closed_ids:
-                        continue  # duplicate announcement of the same still-open call
                     name = req.get("name") or ""
-                    if prior is not None:
-                        warnings.append(
-                            f"{path.name}: line {line_no}: toolCallId {tool_call_id} "
-                            f"reused for a new call ({name or '?'}) after its earlier "
-                            f"call ({prior.name or '?'}) already completed; treated as "
-                            f"a distinct event, not a duplicate")
-                        closed_ids.discard(tool_call_id)
                     arguments = (req.get("arguments")
                                 if isinstance(req.get("arguments"), dict) else {})
                     kind, detail = _ghc_tool_event(name, arguments)
+                    prior = calls.get(tool_call_id)
+                    if prior is not None and tool_call_id not in closed_ids \
+                            and _ghc_same_call(prior, name, detail):
+                        continue  # duplicate announcement of the same still-open call
+                    if prior is not None:
+                        if tool_call_id in closed_ids:
+                            warnings.append(
+                                f"{path.name}: line {line_no}: toolCallId {tool_call_id} "
+                                f"reused for a new call ({name or '?'}) after its earlier "
+                                f"call ({prior.name or '?'}) already completed; treated as "
+                                f"a distinct event, not a duplicate")
+                        else:
+                            warnings.append(
+                                f"{path.name}: line {line_no}: toolCallId {tool_call_id} "
+                                f"collides with a still-open call ({prior.name or '?'}): a "
+                                f"new call ({name or '?'}) announced the same id before "
+                                f"the earlier one completed; treated as a distinct event, "
+                                f"not a duplicate")
+                        closed_ids.discard(tool_call_id)
                     detail["id"] = tool_call_id
                     event = Event(0, kind, origin, str(path), line_no, name=name, detail=detail)
                     events.append(event)
@@ -650,21 +711,30 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
 
         elif etype == "tool.execution_start":
             tool_call_id = data.get("toolCallId") or ""
+            name = data.get("toolName") or ""
+            arguments = (data.get("arguments")
+                        if isinstance(data.get("arguments"), dict) else {})
+            kind, detail = _ghc_tool_event(name, arguments)
             prior = calls.get(tool_call_id) if tool_call_id else None
-            reused = bool(tool_call_id) and prior is not None and tool_call_id in closed_ids
-            if reused:
-                warnings.append(
-                    f"{path.name}: line {line_no}: toolCallId {tool_call_id} reused for "
-                    f"a new tool.execution_start after its earlier call "
-                    f"({prior.name or '?'}) already completed; treated as a distinct "
-                    f"event, not a duplicate")
+            is_dup = (bool(tool_call_id) and prior is not None
+                      and tool_call_id not in closed_ids
+                      and _ghc_same_call(prior, name, detail))
+            if prior is not None and not is_dup:
+                if tool_call_id in closed_ids:
+                    warnings.append(
+                        f"{path.name}: line {line_no}: toolCallId {tool_call_id} reused for "
+                        f"a new tool.execution_start after its earlier call "
+                        f"({prior.name or '?'}) already completed; treated as a distinct "
+                        f"event, not a duplicate")
+                else:
+                    warnings.append(
+                        f"{path.name}: line {line_no}: toolCallId {tool_call_id} collides "
+                        f"with a still-open call ({prior.name or '?'}): a new "
+                        f"tool.execution_start announced the same id before the earlier "
+                        f"one completed; treated as a distinct event, not a duplicate")
                 closed_ids.discard(tool_call_id)
-            event = None if reused else prior
+            event = prior if is_dup else None
             if event is None:
-                name = data.get("toolName") or ""
-                arguments = (data.get("arguments")
-                            if isinstance(data.get("arguments"), dict) else {})
-                kind, detail = _ghc_tool_event(name, arguments)
                 detail["id"] = tool_call_id
                 event = Event(0, kind, origin, str(path), line_no, name=name, detail=detail)
                 events.append(event)
@@ -687,6 +757,15 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
         elif etype == "tool.execution_complete":
             tool_call_id = data.get("toolCallId") or ""
             if tool_call_id:
+                if tool_call_id not in calls or tool_call_id in closed_ids:
+                    reason = ("already closed" if tool_call_id in closed_ids
+                              else "no call was ever recorded for it")
+                    warnings.append(
+                        f"{path.name}: line {line_no}: tool.execution_complete for "
+                        f"toolCallId={tool_call_id} does not match anything currently "
+                        f"open ({reason}); treated as a stray/duplicate completion and "
+                        f"ignored")
+                    continue
                 closed_ids.add(tool_call_id)
                 if stack[-1][0] == tool_call_id:
                     stack.pop()

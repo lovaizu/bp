@@ -2728,6 +2728,184 @@ def test_ghc_a_reused_toolCallId_is_recognised_even_via_execution_start_alone(tm
     assert any("reused-id" in w and "reused" in w for w in run.warnings)
 
 
+# --- GHC: toolCallId reused WHILE still open, not after close (fix round 2) --
+# The first fix round only recognised reuse once a `tool.execution_complete`
+# had been seen for the id. These reproduce the gap all three reviewers found
+# independently: a genuinely different call reusing an id that some earlier
+# call still legitimately holds open.
+def test_ghc_reused_toolCallId_while_still_open_with_a_plain_call_is_not_merged_into_the_stale_delegation(
+        tmp_path):
+    # Given a runSubagent delegation that opens under id "tc1" and never
+    # closes (stays open throughout), followed -- before its own completion
+    # ever arrives -- by an unrelated plain runInTerminal call that reuses
+    # that SAME id "tc1"
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Delegating.",
+                      [ghc_tool_request("runSubagent", "tc1", name="outer-agent")]),
+        ghc_exec_start("runSubagent", "tc1", name="outer-agent"),
+        ghc_assistant("Reusing the id for an unrelated call.",
+                      [ghc_tool_request("runInTerminal", "tc1", command="collide")]),
+        ghc_exec_start("runInTerminal", "tc1", command="collide"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the second call's own event survives -- it is not silently dropped
+    # as "just the duplicate announcement of the still-open runSubagent call"
+    assert len(run.bash_calls) == 1
+    assert run.bash_calls[0].detail["command"] == "collide"
+    # And the collision is named as a warning, not silently absorbed
+    assert any("tc1" in w and "collides" in w for w in run.warnings)
+    # And the stale delegation's own frame was NOT pushed a second time: only
+    # one runSubagent span is reported unclosed at end of file, not two
+    never_closed = [w for w in run.warnings if "never closed" in w]
+    assert len(never_closed) == 1 and "1 runSubagent" in never_closed[0]
+
+
+def test_ghc_reused_toolCallId_while_still_open_is_recognised_even_via_execution_start_alone(
+        tmp_path):
+    # Given a runSubagent delegation that opens under id "tc1" and stays
+    # open, followed by a tool.execution_start alone -- no toolRequests[]
+    # announcement in between -- that reuses that same id for an unrelated
+    # plain call: exercises the collision check inside the
+    # tool.execution_start branch itself, not just the one in the
+    # toolRequests[] loop
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Delegating.",
+                      [ghc_tool_request("runSubagent", "tc1", name="outer-agent")]),
+        ghc_exec_start("runSubagent", "tc1", name="outer-agent"),
+        ghc_exec_start("runInTerminal", "tc1", command="collide"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the colliding call is recognised as its own distinct event, not
+    # silently merged into the still-open runSubagent call
+    assert len(run.bash_calls) == 1
+    assert run.bash_calls[0].detail["command"] == "collide"
+    assert any("tc1" in w and "collides" in w for w in run.warnings)
+    # And the stale delegation's own frame was not pushed a second time
+    never_closed = [w for w in run.warnings if "never closed" in w]
+    assert len(never_closed) == 1 and "1 runSubagent" in never_closed[0]
+
+
+def test_ghc_reused_toolCallId_while_still_open_with_a_second_runSubagent_survives_with_correct_origin(
+        tmp_path):
+    # Given a runSubagent delegation to agent-a that opens under id "tc1" and
+    # stays open, followed -- before its own completion ever arrives -- by an
+    # UNRELATED second runSubagent delegation to agent-b that reuses the same
+    # id "tc1": reuse-while-open, both calls being delegations this time
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Delegating to a.",
+                      [ghc_tool_request("runSubagent", "tc1", name="agent-a")]),
+        ghc_exec_start("runSubagent", "tc1", name="agent-a"),
+        ghc_assistant("Reusing the id, delegating to b.",
+                      [ghc_tool_request("runSubagent", "tc1", name="agent-b")]),
+        ghc_exec_start("runSubagent", "tc1", name="agent-b"),
+        ghc_assistant("BPTRACE step=2 out actor=agent-b"),
+        ghc_exec_complete("tc1"),  # closes agent-b's frame, the innermost/most recent
+        ghc_assistant("BPTRACE step=3 out actor=agent-a"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then BOTH delegations survive as their own distinct events -- the second
+    # is not silently dropped, and the first is not silently merged with it
+    assert len(run.delegations) == 2
+    assert [d.detail["to"] for d in run.delegations] == ["agent-a", "agent-b"]
+    # And origin tracks correctly: the marker made while both spans were open
+    # is scoped to the innermost span (agent-b, the one that opened last)
+    assert run.step_markers[0].origin == "subagent:agent-b"
+    # and after agent-b's completion the ORIGINAL agent-a span is still open,
+    # intact and un-duplicated -- not corrupted by the collision
+    assert run.step_markers[1].origin == "subagent:agent-a"
+    # And the collision is named, and only ONE span (agent-a's) is left open
+    # at end of file, not two -- proof the stale call's frame was never
+    # pushed a second time
+    assert any("tc1" in w and "collides" in w for w in run.warnings)
+    never_closed = [w for w in run.warnings if "never closed" in w]
+    assert len(never_closed) == 1 and "1 runSubagent" in never_closed[0]
+
+
+def test_ghc_reused_toolCallId_while_still_open_at_a_non_outermost_nesting_level(tmp_path):
+    # Given three levels of delegation (L1 -> L2 -> L3), and -- while all
+    # three are open, three levels deep -- an unrelated plain call that
+    # reuses the MIDDLE level's id ("tc-mid"), not the innermost or outermost
+    # one, exercising the collision at a non-outermost frame
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Delegating L1.",
+                      [ghc_tool_request("runSubagent", "tc-l1", name="l1-agent")]),
+        ghc_exec_start("runSubagent", "tc-l1", name="l1-agent"),
+        ghc_assistant("Delegating L2.",
+                      [ghc_tool_request("runSubagent", "tc-mid", name="l2-agent")]),
+        ghc_exec_start("runSubagent", "tc-mid", name="l2-agent"),
+        ghc_assistant("Delegating L3.",
+                      [ghc_tool_request("runSubagent", "tc-l3", name="l3-agent")]),
+        ghc_exec_start("runSubagent", "tc-l3", name="l3-agent"),
+        ghc_assistant("Three levels deep, reusing the middle id.",
+                      [ghc_tool_request("runInTerminal", "tc-mid", command="collide")]),
+        ghc_exec_start("runInTerminal", "tc-mid", command="collide"),
+        ghc_exec_complete("tc-l3"),
+        ghc_assistant("back in L2",
+                      [ghc_tool_request("runInTerminal", "tc-after", command="in l2 again")]),
+        ghc_exec_start("runInTerminal", "tc-after", command="in l2 again"),
+        ghc_exec_complete("tc-after"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the colliding call, announced while nested 3 deep, survives as its
+    # own event, scoped to the innermost frame at the time (l3-agent) -- not
+    # dropped as "just the duplicate announcement" of the still-open middle
+    # delegation
+    assert [e.origin for e in run.bash_calls] == ["subagent:l3-agent", "subagent:l2-agent"]
+    assert run.bash_calls[0].detail["command"] == "collide"
+    # And the collision names the middle id specifically
+    assert any("tc-mid" in w and "collides" in w for w in run.warnings)
+    # And the middle and outer spans are still intact, un-duplicated: after
+    # L3 closes, exactly two runSubagent spans (l1, l2) remain open -- not
+    # three, which is what a second push of the middle frame would produce
+    never_closed = [w for w in run.warnings if "never closed" in w]
+    assert len(never_closed) == 1 and "2 runSubagent" in never_closed[0]
+
+
+# --- GHC: stray/duplicate tool.execution_complete (fix round 2, Verification) -
+def test_ghc_a_stray_duplicate_completion_after_a_legitimate_reuse_is_reported_not_silently_accepted(
+        tmp_path):
+    # Given a runSubagent delegation to agent-a that opens and closes normally
+    # under id "reused-id", then a second, legitimate reuse of that same id
+    # by agent-b that ALSO opens and closes normally -- followed by a THIRD,
+    # stray/duplicate tool.execution_complete for the same id that does not
+    # correspond to anything currently open (agent-b's own completion already
+    # closed it, and nothing has reopened it since)
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Delegating to a.",
+                      [ghc_tool_request("runSubagent", "reused-id", name="agent-a")]),
+        ghc_exec_start("runSubagent", "reused-id", name="agent-a"),
+        ghc_exec_complete("reused-id"),
+        ghc_assistant("Reusing the id, delegating to b.",
+                      [ghc_tool_request("runSubagent", "reused-id", name="agent-b")]),
+        ghc_exec_start("runSubagent", "reused-id", name="agent-b"),
+        ghc_exec_complete("reused-id"),
+        ghc_assistant("outside", [ghc_tool_request("runInTerminal", "tc-outer", command="outer")]),
+        ghc_exec_start("runInTerminal", "tc-outer", command="outer"),
+        ghc_exec_complete("tc-outer"),
+        ghc_exec_complete("reused-id"),  # stray/duplicate: nothing open under this id anymore
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then both delegations are recorded normally and origin correctly
+    # reverted to main after agent-b's own legitimate completion -- the call
+    # made afterwards is main's, not left dangling in agent-b's span
+    assert len(run.delegations) == 2
+    assert run.bash_calls[0].origin == "main"
+    # And the stray extra completion is reported as such, not silently
+    # accepted as a no-op success -- exactly one such anomaly, naming the id
+    stray = [w for w in run.warnings if "stray" in w]
+    assert len(stray) == 1
+    assert "reused-id" in stray[0]
+    assert "already closed" in stray[0]
+    # And there is no leftover unclosed span at end of file caused by the
+    # stray completion mistakenly popping something it should not have
+    assert not any("never closed" in w for w in run.warnings)
+
+
 # --- GHC: event kinds are normalised the same way as CC ----------------------
 def test_ghc_event_kinds_are_normalised_by_the_parser(tmp_path):
     # Given a run using a delegation tool, a shell tool and another tool
