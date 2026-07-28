@@ -2367,9 +2367,9 @@ def ghc_happy_run(tmp_path, name="s.jsonl"):
         ghc_exec_complete("tc1"),
         ghc_assistant(STEP1),
         ghc_assistant("Delegating step 2.",
-                      [ghc_tool_request("runSubagent", "tc2", name="techtest-echo",
+                      [ghc_tool_request("runSubagent", "tc2", agentName="techtest-echo",
                                         prompt="input: neon night")]),
-        ghc_exec_start("runSubagent", "tc2", name="techtest-echo", prompt="input: neon night"),
+        ghc_exec_start("runSubagent", "tc2", agentName="techtest-echo", prompt="input: neon night"),
         ghc_assistant("", [ghc_tool_request("runInTerminal", "tc3",
                                              command='echo "step2: neon night"')]),
         ghc_exec_start("runInTerminal", "tc3", command='echo "step2: neon night"'),
@@ -2426,6 +2426,48 @@ def test_ghc_tool_call_announced_twice_collapses_to_one_event(tmp_path):
     # Then it is one event, not two
     assert len(run.tool_uses) == 1
     assert run.bash_calls[0].detail["command"] == "ls"
+
+
+def test_ghc_toolRequests_string_encoded_arguments_dedup_against_the_dict_form(tmp_path):
+    # Given the real GHC wire format (confirmed against real cold-session
+    # transcripts, not assumed -- see checks/task-1.md fix round 4):
+    # toolRequests[].arguments is a JSON-encoded *string*, while the very same
+    # call's own tool.execution_start carries arguments as a real dict.
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("go", [{
+            "name": "runSubagent", "toolCallId": "tc1",
+            "arguments": json.dumps({"agentName": "techtest-echo", "prompt": "hi"}),
+        }]),
+        ghc_exec_start("runSubagent", "tc1", agentName="techtest-echo", prompt="hi"),
+        ghc_exec_complete("tc1"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the string-encoded announcement and the dict-encoded
+    # tool.execution_start are recognised as the exact same call: one event,
+    # not two, and no spurious "collides with a still-open call" / "reused"
+    # warning (which is what happened before the string was parsed: it
+    # silently became `{}`, which no longer equalled the real dict)
+    assert len(run.delegations) == 1
+    assert run.warnings == []
+
+
+def test_ghc_toolRequests_arguments_string_that_fails_to_parse_degrades_to_empty_dict_with_a_warning(
+        tmp_path):
+    # Given a toolRequests[] entry whose arguments string is not valid JSON
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("go", [{
+            "name": "runInTerminal", "toolCallId": "tc1",
+            "arguments": "not valid json{{{",
+        }]),
+        ghc_exec_complete("tc1"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it degrades to the same {} fallback as any other unexpected shape
+    # (no crash), but the anomaly is surfaced rather than silently swallowed
+    assert run.bash_calls[0].detail["command"] == ""
+    assert any("does not parse as a JSON object" in w for w in run.warnings)
 
 
 def test_ghc_a_tool_request_repeated_in_toolRequests_is_deduped_too(tmp_path):
@@ -2492,8 +2534,8 @@ def test_ghc_origin_reverts_to_main_after_the_delegation_span_closes(tmp_path):
     # Given a delegation whose span closes, followed by another tool call
     p = write_jsonl(tmp_path / "s.jsonl", [
         ghc_assistant("Delegating.",
-                      [ghc_tool_request("runSubagent", "tc1", name="echo-agent")]),
-        ghc_exec_start("runSubagent", "tc1", name="echo-agent"),
+                      [ghc_tool_request("runSubagent", "tc1", agentName="echo-agent")]),
+        ghc_exec_start("runSubagent", "tc1", agentName="echo-agent"),
         ghc_assistant("inside", [ghc_tool_request("runInTerminal", "tc2", command="inner")]),
         ghc_exec_start("runInTerminal", "tc2", command="inner"),
         ghc_exec_complete("tc2"),
@@ -2518,21 +2560,61 @@ def test_ghc_delegation_is_counted_with_target_agent(tmp_path):
     assert run.delegations[0].detail["to"] == "techtest-echo"
 
 
+def test_ghc_runSubagent_target_read_from_agentName_key_not_name(tmp_path):
+    # Given a runSubagent call shaped exactly like a real cold-session GHC
+    # transcript (confirmed against real data, not assumed -- see
+    # checks/task-1.md fix round 4): toolRequests[].arguments is a
+    # JSON-encoded string carrying the target under `agentName`, and the
+    # matching tool.execution_start carries the same key as a real dict.
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Echo via techtest-echo subagent.", [{
+            "name": "runSubagent", "toolCallId": "toolu_bdrk_019ZJGfYudt7x4LQV9VRoksA",
+            "arguments": json.dumps({
+                "description": "Echo via techtest-echo subagent",
+                "agentName": "techtest-echo",
+                "prompt": "input: Follow instructions in #prompt:techtest.prompt.md",
+            }),
+        }]),
+        {"type": "tool.execution_start", "data": {
+            "toolCallId": "toolu_bdrk_019ZJGfYudt7x4LQV9VRoksA", "toolName": "runSubagent",
+            "arguments": {
+                "description": "Echo via techtest-echo subagent",
+                "agentName": "techtest-echo",
+                "prompt": "input: Follow instructions in #prompt:techtest.prompt.md",
+            }}},
+        ghc_assistant("inside", [ghc_tool_request("runInTerminal", "tc-inner", command="echo hi")]),
+        ghc_exec_start("runInTerminal", "tc-inner", command="echo hi"),
+        ghc_exec_complete("tc-inner"),
+        ghc_exec_complete("toolu_bdrk_019ZJGfYudt7x4LQV9VRoksA"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the delegation resolves to the real target. Reading `name` instead
+    # of `agentName` here always produced `to == ""` and
+    # origin == subagent:<unknown> on real data, since real GHC transcripts
+    # never carry a `name` key inside runSubagent's arguments at all --
+    # regardless of the arguments-string fix covered above
+    assert len(run.delegations) == 1
+    assert run.delegations[0].detail["to"] == "techtest-echo"
+    assert run.bash_calls[0].origin == "subagent:techtest-echo"
+    assert run.warnings == []
+
+
 def test_ghc_nested_subagent_spans_are_attributed_layer_by_layer(tmp_path):
     # Given an outer runSubagent opened, then a second runSubagent opened
     # before the first closes, both closing in correct LIFO order -- the GHC
     # analogue of test_nested_subagent_events_are_spliced_recursively for CC
     p = write_jsonl(tmp_path / "s.jsonl", [
         ghc_assistant("Delegating outer.",
-                      [ghc_tool_request("runSubagent", "tc-outer", name="outer-agent")]),
-        ghc_exec_start("runSubagent", "tc-outer", name="outer-agent"),
+                      [ghc_tool_request("runSubagent", "tc-outer", agentName="outer-agent")]),
+        ghc_exec_start("runSubagent", "tc-outer", agentName="outer-agent"),
         ghc_assistant("outer working",
                       [ghc_tool_request("runInTerminal", "tc-a", command="in outer")]),
         ghc_exec_start("runInTerminal", "tc-a", command="in outer"),
         ghc_exec_complete("tc-a"),
         ghc_assistant("Delegating inner.",
-                      [ghc_tool_request("runSubagent", "tc-inner", name="inner-agent")]),
-        ghc_exec_start("runSubagent", "tc-inner", name="inner-agent"),
+                      [ghc_tool_request("runSubagent", "tc-inner", agentName="inner-agent")]),
+        ghc_exec_start("runSubagent", "tc-inner", agentName="inner-agent"),
         ghc_assistant("inner working",
                       [ghc_tool_request("runInTerminal", "tc-b", command="in inner")]),
         ghc_exec_start("runInTerminal", "tc-b", command="in inner"),
@@ -2612,7 +2694,7 @@ def test_ghc_a_runSubagent_execution_start_without_a_tool_call_id_is_warned_abou
     # Given a runSubagent execution_start that never recorded a toolCallId
     p = write_jsonl(tmp_path / "s.jsonl", [
         {"type": "tool.execution_start",
-         "data": {"toolName": "runSubagent", "arguments": {"name": "echo-agent"}}},
+         "data": {"toolName": "runSubagent", "arguments": {"agentName": "echo-agent"}}},
     ])
     # When parsed
     run = ct.parse_ghc_run(p)
@@ -2625,8 +2707,8 @@ def test_ghc_a_runSubagent_execution_start_without_a_tool_call_id_is_warned_abou
 def test_ghc_an_unclosed_delegation_span_is_warned_about(tmp_path):
     # Given a runSubagent span with no matching tool.execution_complete
     p = write_jsonl(tmp_path / "s.jsonl", [
-        ghc_assistant("go", [ghc_tool_request("runSubagent", "tc1", name="techtest-echo")]),
-        ghc_exec_start("runSubagent", "tc1", name="techtest-echo"),
+        ghc_assistant("go", [ghc_tool_request("runSubagent", "tc1", agentName="techtest-echo")]),
+        ghc_exec_start("runSubagent", "tc1", agentName="techtest-echo"),
         ghc_assistant(STEP2),
     ])
     # When parsed
@@ -2643,11 +2725,11 @@ def test_ghc_out_of_order_completion_closes_the_matched_frame_and_everything_abo
     # does -- a genuine out-of-order completion, not a well-formed LIFO close
     p = write_jsonl(tmp_path / "s.jsonl", [
         ghc_assistant("Delegating outer.",
-                      [ghc_tool_request("runSubagent", "tc-outer", name="outer-agent")]),
-        ghc_exec_start("runSubagent", "tc-outer", name="outer-agent"),
+                      [ghc_tool_request("runSubagent", "tc-outer", agentName="outer-agent")]),
+        ghc_exec_start("runSubagent", "tc-outer", agentName="outer-agent"),
         ghc_assistant("Delegating inner.",
-                      [ghc_tool_request("runSubagent", "tc-inner", name="inner-agent")]),
-        ghc_exec_start("runSubagent", "tc-inner", name="inner-agent"),
+                      [ghc_tool_request("runSubagent", "tc-inner", agentName="inner-agent")]),
+        ghc_exec_start("runSubagent", "tc-inner", agentName="inner-agent"),
         ghc_assistant("still inside inner",
                       [ghc_tool_request("runInTerminal", "tc-mid", command="inside inner")]),
         ghc_exec_start("runInTerminal", "tc-mid", command="inside inner"),
@@ -2686,8 +2768,8 @@ def test_ghc_a_reused_toolCallId_across_two_unrelated_calls_does_not_erase_the_s
         ghc_exec_start("runInTerminal", "reused-id", command="first"),
         ghc_exec_complete("reused-id"),
         ghc_assistant("Delegating, reusing the id.",
-                      [ghc_tool_request("runSubagent", "reused-id", name="second-agent")]),
-        ghc_exec_start("runSubagent", "reused-id", name="second-agent"),
+                      [ghc_tool_request("runSubagent", "reused-id", agentName="second-agent")]),
+        ghc_exec_start("runSubagent", "reused-id", agentName="second-agent"),
         ghc_assistant("BPTRACE step=2 out actor=second-agent"),
         ghc_exec_complete("reused-id"),
     ])
@@ -2714,7 +2796,7 @@ def test_ghc_a_reused_toolCallId_is_recognised_even_via_execution_start_alone(tm
                       [ghc_tool_request("runInTerminal", "reused-id", command="first")]),
         ghc_exec_start("runInTerminal", "reused-id", command="first"),
         ghc_exec_complete("reused-id"),
-        ghc_exec_start("runSubagent", "reused-id", name="second-agent"),
+        ghc_exec_start("runSubagent", "reused-id", agentName="second-agent"),
         ghc_assistant("BPTRACE step=2 out actor=second-agent"),
         ghc_exec_complete("reused-id"),
     ])
@@ -2741,8 +2823,8 @@ def test_ghc_reused_toolCallId_while_still_open_with_a_plain_call_is_not_merged_
     # that SAME id "tc1"
     p = write_jsonl(tmp_path / "s.jsonl", [
         ghc_assistant("Delegating.",
-                      [ghc_tool_request("runSubagent", "tc1", name="outer-agent")]),
-        ghc_exec_start("runSubagent", "tc1", name="outer-agent"),
+                      [ghc_tool_request("runSubagent", "tc1", agentName="outer-agent")]),
+        ghc_exec_start("runSubagent", "tc1", agentName="outer-agent"),
         ghc_assistant("Reusing the id for an unrelated call.",
                       [ghc_tool_request("runInTerminal", "tc1", command="collide")]),
         ghc_exec_start("runInTerminal", "tc1", command="collide"),
@@ -2771,8 +2853,8 @@ def test_ghc_reused_toolCallId_while_still_open_is_recognised_even_via_execution
     # toolRequests[] loop
     p = write_jsonl(tmp_path / "s.jsonl", [
         ghc_assistant("Delegating.",
-                      [ghc_tool_request("runSubagent", "tc1", name="outer-agent")]),
-        ghc_exec_start("runSubagent", "tc1", name="outer-agent"),
+                      [ghc_tool_request("runSubagent", "tc1", agentName="outer-agent")]),
+        ghc_exec_start("runSubagent", "tc1", agentName="outer-agent"),
         ghc_exec_start("runInTerminal", "tc1", command="collide"),
     ])
     # When parsed
@@ -2795,11 +2877,11 @@ def test_ghc_reused_toolCallId_while_still_open_with_a_second_runSubagent_surviv
     # id "tc1": reuse-while-open, both calls being delegations this time
     p = write_jsonl(tmp_path / "s.jsonl", [
         ghc_assistant("Delegating to a.",
-                      [ghc_tool_request("runSubagent", "tc1", name="agent-a")]),
-        ghc_exec_start("runSubagent", "tc1", name="agent-a"),
+                      [ghc_tool_request("runSubagent", "tc1", agentName="agent-a")]),
+        ghc_exec_start("runSubagent", "tc1", agentName="agent-a"),
         ghc_assistant("Reusing the id, delegating to b.",
-                      [ghc_tool_request("runSubagent", "tc1", name="agent-b")]),
-        ghc_exec_start("runSubagent", "tc1", name="agent-b"),
+                      [ghc_tool_request("runSubagent", "tc1", agentName="agent-b")]),
+        ghc_exec_start("runSubagent", "tc1", agentName="agent-b"),
         ghc_assistant("BPTRACE step=2 out actor=agent-b"),
         ghc_exec_complete("tc1"),  # closes agent-b's frame, the innermost/most recent
         ghc_assistant("BPTRACE step=3 out actor=agent-a"),
@@ -2831,14 +2913,14 @@ def test_ghc_reused_toolCallId_while_still_open_at_a_non_outermost_nesting_level
     # one, exercising the collision at a non-outermost frame
     p = write_jsonl(tmp_path / "s.jsonl", [
         ghc_assistant("Delegating L1.",
-                      [ghc_tool_request("runSubagent", "tc-l1", name="l1-agent")]),
-        ghc_exec_start("runSubagent", "tc-l1", name="l1-agent"),
+                      [ghc_tool_request("runSubagent", "tc-l1", agentName="l1-agent")]),
+        ghc_exec_start("runSubagent", "tc-l1", agentName="l1-agent"),
         ghc_assistant("Delegating L2.",
-                      [ghc_tool_request("runSubagent", "tc-mid", name="l2-agent")]),
-        ghc_exec_start("runSubagent", "tc-mid", name="l2-agent"),
+                      [ghc_tool_request("runSubagent", "tc-mid", agentName="l2-agent")]),
+        ghc_exec_start("runSubagent", "tc-mid", agentName="l2-agent"),
         ghc_assistant("Delegating L3.",
-                      [ghc_tool_request("runSubagent", "tc-l3", name="l3-agent")]),
-        ghc_exec_start("runSubagent", "tc-l3", name="l3-agent"),
+                      [ghc_tool_request("runSubagent", "tc-l3", agentName="l3-agent")]),
+        ghc_exec_start("runSubagent", "tc-l3", agentName="l3-agent"),
         ghc_assistant("Three levels deep, reusing the middle id.",
                       [ghc_tool_request("runInTerminal", "tc-mid", command="collide")]),
         ghc_exec_start("runInTerminal", "tc-mid", command="collide"),
@@ -2938,12 +3020,12 @@ def test_ghc_a_stray_duplicate_completion_after_a_legitimate_reuse_is_reported_n
     # closed it, and nothing has reopened it since)
     p = write_jsonl(tmp_path / "s.jsonl", [
         ghc_assistant("Delegating to a.",
-                      [ghc_tool_request("runSubagent", "reused-id", name="agent-a")]),
-        ghc_exec_start("runSubagent", "reused-id", name="agent-a"),
+                      [ghc_tool_request("runSubagent", "reused-id", agentName="agent-a")]),
+        ghc_exec_start("runSubagent", "reused-id", agentName="agent-a"),
         ghc_exec_complete("reused-id"),
         ghc_assistant("Reusing the id, delegating to b.",
-                      [ghc_tool_request("runSubagent", "reused-id", name="agent-b")]),
-        ghc_exec_start("runSubagent", "reused-id", name="agent-b"),
+                      [ghc_tool_request("runSubagent", "reused-id", agentName="agent-b")]),
+        ghc_exec_start("runSubagent", "reused-id", agentName="agent-b"),
         ghc_exec_complete("reused-id"),
         ghc_assistant("outside", [ghc_tool_request("runInTerminal", "tc-outer", command="outer")]),
         ghc_exec_start("runInTerminal", "tc-outer", command="outer"),
@@ -2972,8 +3054,8 @@ def test_ghc_a_stray_duplicate_completion_after_a_legitimate_reuse_is_reported_n
 def test_ghc_event_kinds_are_normalised_by_the_parser(tmp_path):
     # Given a run using a delegation tool, a shell tool and another tool
     p = write_jsonl(tmp_path / "s.jsonl", [
-        ghc_assistant("a", [ghc_tool_request("runSubagent", "t1", name="x")]),
-        ghc_exec_start("runSubagent", "t1", name="x"),
+        ghc_assistant("a", [ghc_tool_request("runSubagent", "t1", agentName="x")]),
+        ghc_exec_start("runSubagent", "t1", agentName="x"),
         ghc_exec_complete("t1"),
         ghc_assistant("b", [ghc_tool_request("runInTerminal", "t2", command="ls")]),
         ghc_exec_start("runInTerminal", "t2", command="ls"),

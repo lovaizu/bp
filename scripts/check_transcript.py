@@ -543,12 +543,60 @@ GHC_BASH_TOOL_NAMES = {"runInTerminal"}
 
 
 def _ghc_tool_event(name, arguments):
-    """Normalise a GHC tool call into (kind, detail). The only GHC tool-name table."""
+    """Normalise a GHC tool call into (kind, detail). The only GHC tool-name table.
+
+    A `runSubagent` call's target subagent name lives under the `agentName`
+    key in real GHC transcripts, never `name` (confirmed against real
+    cold-session data, not assumed -- see checks/task-1.md fix round 4).
+    Reading `name` here silently produced `to: ""` -- an unresolved target --
+    for every single real GHC delegation, regardless of anything else.
+    """
     if name in GHC_AGENT_TOOL_NAMES:
-        return DELEGATE, {"to": arguments.get("name") or ""}
+        return DELEGATE, {"to": arguments.get("agentName") or ""}
     if name in GHC_BASH_TOOL_NAMES:
         return BASH, {"command": arguments.get("command", "")}
     return TOOL, {}
+
+
+def _ghc_toolrequest_arguments(raw, path, line_no, warnings):
+    """Coerce one `toolRequests[]` entry's `arguments` field into a dict.
+
+    Real GHC transcripts carry this field as a *string* holding the call's
+    arguments JSON-encoded, not a nested object -- even though the very same
+    call's own `tool.execution_start` (same toolCallId) carries `arguments`
+    as a real dict (confirmed against real cold-session data, not assumed --
+    see checks/task-1.md fix round 4). Parsing the string here is what lets
+    `_ghc_same_call` recognise the two announcements as the same call: left
+    unparsed, it silently became `{}`, which no longer equalled the real
+    dict from `tool.execution_start` and produced a spurious "collides with
+    a still-open call" / "toolCallId reused" warning plus a duplicate event
+    for every real GHC delegation.
+
+    A dict is passed through unchanged (older/synthetic fixtures, or any
+    future GHC version that inlines the object directly). Anything else --
+    a string that fails to parse, or that parses to something other than a
+    JSON object -- degrades to `{}`, the same fallback already used for
+    every other unexpected shape here, but a string that fails to parse as a
+    JSON object is not swallowed silently: a warning names the anomaly so it
+    stays visible instead of quietly losing dedup/target-resolution
+    fidelity. A missing/non-string/non-dict value (e.g. absent, a list, a
+    number) is left as a silent `{}`, matching the pre-existing fallback for
+    those shapes.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+        warnings.append(
+            f"{path.name}: line {line_no}: toolRequests[] entry's arguments "
+            f"is a string that does not parse as a JSON object; treated as {{}}")
+        return {}
+    return {}
 
 
 def _ghc_same_call(prior, name, arguments):
@@ -694,8 +742,8 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
                             f"toolCallId, so it cannot be scoped or deduped; skipped")
                         continue
                     name = req.get("name") or ""
-                    arguments = (req.get("arguments")
-                                if isinstance(req.get("arguments"), dict) else {})
+                    arguments = _ghc_toolrequest_arguments(
+                        req.get("arguments"), path, line_no, warnings)
                     kind, detail = _ghc_tool_event(name, arguments)
                     prior = calls.get(tool_call_id)
                     if prior is not None and tool_call_id not in closed_ids \
