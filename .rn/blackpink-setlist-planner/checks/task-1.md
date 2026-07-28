@@ -303,6 +303,41 @@ a55fb40d : PASS
 **このラウンドで意図的に対応しなかったこと（スコープ外、既存の記載どおり）**:
 - fix round 2 の節に記載した「同一 id への衝突で2枚同時に開いたフレームのうち、より新しい方が閉じた後により古い方の本物の completion が届くと stray/duplicate と誤判定される」複合ギャップは、今回のラウンドでは意図的に手を付けていない。２つの敵対的な前提（id の衝突が起きる、かつその後に古い方の completion が独立して届く）が重なる必要があり実現性が低いこと、また誤判定時も `never closed` 系の異常は残り診断が完全に沈黙するわけではないことから、レビューで「ドキュメント化された既知の制限として出荷可能」と判断済みであり、この判断は変えていない。今回のラウンドで修正したのは、指示書が指摘した「診断信号がゼロになる」汎用 TOOL 種別の引数比較の穴のみである。
 
+### GHC変換・チェックスクリプト拡張: レビュー指摘の修正（fix round 4 — 実データによる2件のフィールド/形式バグ）
+
+実装担当エージェントとして、コミット `17ee89b`（fix round 3）時点で `checks/task-1.md`（本節より上、line 201/203）が「実 GHC transcript による検証は一切行っていない」「`runSubagent` 引数のフィールド名（`name`/`prompt` を仮定）は設計ドキュメントに明記がない」と明示的に未検証・仮定のまま残していた2点を、ユーザーが実際に取得した3回のコールドセッション実 GHC transcript の生 JSONL を直接確認したうえで修正した自己申告。QA/Craft/Verification の Overall Verdict は付けない。TDD で、実データの形そのままの失敗するテストを先に書き、`17ee89b` 時点のコードに対して実際に失敗することを確認してから実装を直した。
+
+**変更ファイル**: `scripts/check_transcript.py`（新規ヘルパー `_ghc_toolrequest_arguments` を追加し `toolRequests[]` ループの呼び出し元を差し替え、`_ghc_tool_event` の1行を修正）、`scripts/test_check_transcript.py`（新規リグレッションテスト3件を追加し、`runSubagent` 引数キーを `name=` から `agentName=` に前提修正した既存テスト呼び出し・フィクスチャ約40箇所を更新）、`scripts/testdata/ghc-delegation.jsonl`・`scripts/testdata/ghc-no-delegation.jsonl`（実ワイヤーフォーマットに合わせて全面書き換え）。CC 側のコード・テスト・`.rn/blackpink-setlist-planner/steering.md` は無変更。
+
+**Bug 1（`toolRequests[].arguments` が実データでは dict ではなく JSON エンコード済み文字列）**
+
+- Before（`17ee89b`）: `toolRequests[]` ループは `arguments = (req.get("arguments") if isinstance(req.get("arguments"), dict) else {})` としており、実 GHC transcript の生データで `arguments` が文字列（例: `"arguments":"{\"description\": ..., \"agentName\": \"techtest-echo\", ...}"`）だった場合、`isinstance(..., dict)` が `False` になり無条件に `{}` へ落ちる。一方、同じ呼び出しの `tool.execution_start` 側は `arguments` を実の dict として運んでくる。この不一致のせいで `_ghc_same_call` が「`toolRequests[]` の告知」と「本物の `tool.execution_start`」を同一呼び出しと認識できず、実 GHC の全ての `runSubagent`/`runInTerminal` 呼び出しで「still-open call と衝突」「toolCallId reused」という偽の警告と重複イベントが必ず発生していた。
+- After: 新規ヘルパー `_ghc_toolrequest_arguments(raw, path, line_no, warnings)` を追加。`dict` はそのまま通し、`str` は `json.loads` を試み、パース結果が `dict` ならそれを採用、パース不能または dict 以外に解決した場合は既存の `{}` フォールバックに落としつつ、文字列がパースに失敗したケースのみ警告を1件記録する（`dict`/`str` 以外の未対応形は既存どおり無警告で `{}`、指示書の「既存のフォールバックは維持しつつ、警告を出すべきか検討」に沿った挙動）。`toolRequests[]` ループの1呼び出し箇所のみ差し替え、`tool.execution_start` 側は元々 dict を正しく受け取っているため無変更。
+- Pinning tests（いずれも `17ee89b` に対して失敗することを確認済み、詳細は下記「検証結果」参照）:
+  - `test_ghc_toolRequests_string_encoded_arguments_dedup_against_the_dict_form` ── 実データそのままの形（`toolRequests[]` は JSON 文字列 `arguments`、`tool.execution_start` は dict `arguments`）で1つの `runSubagent` 呼び出しを書き、`len(run.delegations) == 1` かつ `run.warnings == []` を固定。
+  - `test_ghc_toolRequests_arguments_string_that_fails_to_parse_degrades_to_empty_dict_with_a_warning` ── パース不能な文字列（`"not valid json{{{"`）を与え、クラッシュせず `detail["command"] == ""` に落ちること、かつ `"does not parse as a JSON object"` を含む警告が出ることを固定。
+
+**Bug 2（`_ghc_tool_event` の `runSubagent` 分岐が `arguments.get("name")` を読んでいるが、実データのキーは `agentName`）**
+
+- Before（`17ee89b` まで一貫）: `_ghc_tool_event` は `return DELEGATE, {"to": arguments.get("name") or ""}` としていた。実 GHC の `runSubagent` 呼び出しはターゲット名を必ず `agentName` キーで運ぶ（`"agentName": "techtest-echo"`、ユーザー提示の実 transcript 行で確認）。`name` キーは実データに存在しないため、`arguments.get("name")` は常に `None` となり `to` は常に `""` に落ち、実 GHC の全委譲イベントが「ターゲット不明」（`delegate -> ?` および「runSubagent call names no target」警告付き `subagent:<unknown>` origin）として誤って報告されていた。Bug 1 を直しても本バグは独立に残る。
+- After: 1行のみ変更、`arguments.get("name")` → `arguments.get("agentName")`。`_ghc_tool_event` のシグネチャ・`runInTerminal`/汎用 TOOL 分岐・戻り値の型（`(kind, detail)`）は無変更。ドキュストリングに「`agentName` が実データのキーであり `name` ではないことを実データで確認済み」という設計判断の理由を追記（このファイルの `_ghc_same_call`/`_ghc_scan` と同じ、既存の記録スタイルを踏襲）。
+- Pinning test（`17ee89b` に対して失敗することを確認済み）:
+  - `test_ghc_runSubagent_target_read_from_agentName_key_not_name` ── ユーザーが提示した実 transcript 行（`toolCallId="toolu_bdrk_019ZJGfYudt7x4LQV9VRoksA"`、`description`/`agentName`/`prompt` を含む実引数、JSON 文字列の `toolRequests[]` announcement と dict の `tool.execution_start` の組）をほぼそのまま再現し、`run.delegations[0].detail["to"] == "techtest-echo"`、`run.bash_calls[0].origin == "subagent:techtest-echo"`、`run.warnings == []` を固定。Bug 1・Bug 2 の両方が同時に直っていないと通らない構成にした。
+
+**既存テスト・フィクスチャの前提修正（新規バグではないが、Bug 2 の修正で必然的に必要になったもの）**:
+- `_ghc_tool_event` を `agentName` 読み取りに変えると、`runSubagent` 系の既存テスト・共有フィクスチャ（`ghc_happy_run` を含む）が使っていた `ghc_tool_request("runSubagent", ..., name=X)` / `ghc_exec_start("runSubagent", ..., name=X)` は、実データと同じ「間違ったキー（`name`）を仮定していた」箇所であり、そのまま放置すると全て `to == ""` に壊れる。`scripts/test_check_transcript.py` 内の該当呼び出し（`runSubagent` を伴う `ghc_tool_request`/`ghc_exec_start` 呼び出しおよび1件の生 dict リテラル、計約40箇所）を機械的に `name=` → `agentName=` に前提修正し、実ワイヤーフォーマットと一致させた。テスト自身が検証している振る舞い（委譲イベントの `to`/origin 解決）は一切変えていない。
+- `scripts/testdata/ghc-delegation.jsonl`・`scripts/testdata/ghc-no-delegation.jsonl` は「documented schema, hand-composed contents」という既存コメントが示すとおり手組みの手書きフィクスチャで、`toolRequests[].arguments` が dict・`runSubagent` のキーが `name` という、今回判明した誤った仮定をそのままエンコードしていた。実ワイヤーフォーマット（`toolRequests[].arguments` は JSON 文字列、`runSubagent` のキーは `agentName`、`tool.execution_start` 側は引き続き dict）に合わせて全面的に書き直した。これに依存していた `test_ghc_fixture_no_delegation_matches_the_transcript`・`test_ghc_fixture_delegation_merges_the_inline_subagent_events`・`test_ghc_fixture_delegation_passes_the_stage_b_expectations` はコード変更なしでそのまま通ることを確認済み（アサーション内容は無変更、フィクスチャの中身だけを実データ形へ更新した）。
+
+**検証結果**:
+- 3件の新規リグレッションテストは、`scripts/check_transcript.py` を `17ee89b` 時点に戻した状態（`git stash` でコード側のみ一時的に戻し、テストファイルはそのまま）で個別に実行し、3件とも実際に失敗することを確認済み（`test_ghc_toolRequests_string_encoded_arguments_dedup_against_the_dict_form` は重複イベント発生、`test_ghc_toolRequests_arguments_string_that_fails_to_parse_degrades_to_empty_dict_with_a_warning` は警告文言不一致、`test_ghc_runSubagent_target_read_from_agentName_key_not_name` は `len(run.delegations) == 2` かつ `to` 不一致で失敗）。修正適用後に `git stash pop` で元に戻し、以下は修正後の数値。
+- `python3 -m pytest scripts/test_check_transcript.py -q` → **277 passed, 1 skipped**（skip は環境依存の opt-in `test_live_project_dir_can_be_scanned_without_crashing` のみ）。fix round 3 終了時点の 274 から新規3件の分だけ増加しており、既存テストの破壊は0件（既存の `runSubagent` 関連テストは前述の `agentName=` 前提修正込みで全て成功）。
+- `rm -f .coverage .coverage.* scripts/.coverage.*; COVERAGE_PROCESS_START=$PWD/.coveragerc python3 -m coverage run -m pytest scripts/test_check_transcript.py; python3 -m coverage combine . scripts; python3 -m coverage report -m` → `scripts/check_transcript.py`: **775 stmts / 0 miss（行 100%）、342 branch / 0 partial（分岐 100%）**。fix round 3 終了時点（762 stmts / 336 branch、100%）から新規ヘルパー `_ghc_toolrequest_arguments` の分だけ stmts/branch が増加しているが、追加分も含め引き続き100%。
+
+**このラウンドで意図的に対応しなかったこと・残存する既知の限界**:
+- fix round 2 の節に記載した複合ギャップ（同一 id 衝突で2枚同時に開いたフレームのうち新しい方が閉じた後に古い方の本物の completion が届くケース）は今回も対象外。前ラウンドまでの受容判断（実現性が低く、発生時も `never closed` 系の異常が残り完全沈黙ではない）は変えていない。
+- `toolRequests[].arguments` が JSON 文字列であることは今回の実データ3件で確認できたが、GHC の将来のバージョンや別のツール名で dict のまま送られてくる可能性を排除する根拠は実データにはない。`_ghc_toolrequest_arguments` は dict をそのまま通す設計にしてあるため、どちらの形で来ても壊れない（新規テストのうち他の `ghc_tool_request` 系テストは引き続き dict の `arguments` を渡しており、dict 経路が壊れていないことも同時に確認済み）。
+- 今回確認できた実データは `runSubagent`／`runInTerminal` の2種のみで、他の GHC ツール名（`readFile`/`writeFile`/`semanticSearch` 等）の `toolRequests[].arguments` が実データで文字列かどうかは未確認のまま。ただし `_ghc_toolrequest_arguments` は特定のツール名に依存しない共通経路のため、追加の場合分けなしに同じ修正の恩恵を受ける設計にしてある。
+
 ## GHC変換・チェックスクリプト拡張: コーディネーターによるレビュー総括（2026-07-28）
 
 **スコープ**: task #1 Step「安定したパターンをGHCへ変換し、GHCでも同様に3回、チェックスクリプト（GHC transcript対応を追加）で確認する」のうち、**コード実装側**（`check_transcript.py` の `--platform ghc` 対応、`.github/prompts/techtest.prompt.md`・`.github/agents/techtest-echo.agent.md` の移植）。**GHC 側での実際のコールドセッション3回実行・実測判定はこのスコープ外**（ユーザーが VS Code + GitHub Copilot Chat で行う必要があり、本セッション内では実行できない）。
