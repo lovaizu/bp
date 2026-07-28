@@ -1791,6 +1791,46 @@ def test_a_fabricated_marker_is_not_vindicated_by_a_different_marker_of_the_same
                for a in result.anomalies), result.anomalies
 
 
+def test_a_fabricated_start_marker_is_not_vindicated_by_a_different_wf_same_theme(tmp_path):
+    # Given a run that really emits a start marker (theme="neon night",
+    # wf=techtest.md) but only ever quotes a start marker for the *same*
+    # theme with a *different* wf -- that wf never really happened, it was
+    # only shown inside a fence
+    fabricated_start = 'BPTRACE start theme="neon night" wf=totally-different-workflow.md'
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)),
+        assistant(text("```\n" + fabricated_start + "\n```")),
+    ])
+    run = ct.parse_cc_run(p)
+    # When it is checked against the real start marker only
+    result = ct.evaluate(run, [ct.parse_expectation("start:theme=neon night,wf=techtest.md")], [])
+    # Then the fabricated wf is still flagged as an anomaly: a genuinely
+    # emitted start of the same theme does not vindicate a start that was
+    # only ever quoted for a *different* wf -- theme alone is too broad a
+    # guard, wf is a first-class part of a start marker's identity too
+    assert any("quoted" in a and "totally-different-workflow.md" in a
+               for a in result.anomalies), result.anomalies
+
+
+def test_announcing_a_start_marker_before_emitting_it_is_not_an_anomaly(tmp_path):
+    # Given the thing a well-behaved run most naturally does for a start
+    # marker: show the line it is about to print, inside a fence, with the
+    # exact same theme AND wf, and then actually print it
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text("I will now emit:\n\n```\n" + START + "\n```\n")),
+        assistant(text(START)),
+    ])
+    run = ct.parse_cc_run(p)
+    # When it is checked
+    result = ct.evaluate(run, [ct.parse_expectation("start:theme=neon night,wf=techtest.md")], [])
+    # Then the quotation is not held against a run that really did emit the
+    # exact same start marker (theme and wf both matching)
+    assert result.passed, result.failures + result.anomalies
+    assert result.anomalies == []
+    # and the quotation is still on the record, just not as damage
+    assert len(run.quoted_markers) == 1
+
+
 def test_a_quoted_malformed_line_is_just_noise(tmp_path):
     # Given a fenced block holding a near miss rather than a real marker
     p = write_jsonl(tmp_path / "s.jsonl", [
