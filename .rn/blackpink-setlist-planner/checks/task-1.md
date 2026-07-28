@@ -120,3 +120,29 @@ f71b8f11 : FAIL  x expected 0 x delegate, got 1; observed: [...] delegate -> bp-
 - Craft expert:
 - Verification expert:
 - Ready to check off:
+
+### 3巡目の修正（レビュアー指摘12件）の検証・レビュー（2026-07-28）
+
+3巡目の修正はコミット `44e093d` として tree には入っていたが未検証・未レビューのまま前セッションで中断されていた（12件中5件のみスポット確認済み）。本ラウンドで残り7件を確認し、続けて QA/Craft/Verification の敵対的レビューを1巡させた。
+
+**残り7件の確認結果**（すべて対応する自動テストが green かつ、意図した不具合シナリオを実際に repro して確認）:
+
+1. info付き連続フェンスの誤FAIL → `test_two_code_blocks_with_info_strings_do_not_swallow_what_follows` で確認。修正前提（旧: info string があると常にネスト）を撤回し、「閉じが開きに優先、厳密により長いフェンスのみネスト」という CommonMark 準拠のルールに変更されていることを確認
+2. 本物マーカーが `marker_quoted` で誤FAIL → `test_announcing_a_marker_before_emitting_it_is_not_an_anomaly` / `test_a_quoted_marker_is_still_an_anomaly_when_only_the_quotation_exists` で確認（ただしこの判定ロジック自体に本ラウンドのレビューで新たな欠陥が見つかり、下記の通り2回の追加修正で閉じた）
+3. `subagent_type` 欠落時の `to` フォールバック → `test_a_delegation_with_no_recorded_target_takes_it_from_the_meta` / `test_a_recorded_subagent_type_is_never_overwritten_by_the_meta` で確認。`.meta.json` の `agentType` は「呼び出し側が明示した値がない時だけ」補う一方向のフォールバックであることをテストで固定
+4. `thinking` ブロックのテスト固定 → `test_a_marker_inside_a_thinking_block_is_not_evidence` / `test_recorded_dev_session_does_not_count_its_thinking_block`（実データ `cc-dev-session.jsonl` の thinking ブロックがマーカーを含むが証拠にならないことを確認）
+5. リスト項目内フェンスのテスト交絡 → `test_a_list_marker_before_a_fence_still_opens_it` で確認。`- \`\`\`` がフェンスを開くことを4スペースインデントとは独立に固定
+6. `.coveragerc` の再現手順 → **実際に不具合を発見**。`check_transcript.py` docstring 内の再現コマンドが `coverage combine`（引数なし）になっており、`scripts/` cwd で書き出されたサブプロセスのカバレッジデータが `combine` に無視され 99%（4行 missing）と誤って過小報告されることを実行で確認した。`.coveragerc` 自身のヘッダコメントにある正しい形（`combine . scripts`）に合わせて docstring を修正し、100% で再現することを確認（コミット `45ee83f`）
+7. フィクスチャ説明の訂正 → 旧説明「Recorded, anonymised excerpts of real Claude Code transcripts」は事実誤認（実際は実データの形状に似せて手で組んだ合成データ）だったものが、「They are *not* recordings -- the events in them were composed to pin one behaviour each」に訂正されていることを確認。値（`sample-song-finder` 等）が実データの実名と異なることからも合成データであることを裏付け
+
+**QA/Craft/Verification 敵対的レビュー1巡（cap 3 のうち2回のフィックスイテレーションを使用）**:
+
+- 初回レビュー: QA・Craft がそれぞれ独立に同一の Critical 欠陥を発見 — `evaluate()` の quoted-marker 救済ロジック（3巡目修正で追加）が「マーカーの種類（kind）が一致するだけ」で救済しており、無関係な本物マーカー（例: 本物の `step=1`）が存在すると、捏造された quoted `step=2`（一度も本当には出力されていない）まで無罪放免になり、偽PASS の温床になっていた。Craft は追加で、無期待値（report-only/`--dry-run`）モードが `Discovery.duplicates`（同一セッションの重複判定）を出力から握り潰す欠陥も発見。Verification は独立に12件全カテゴリを実際にコードをリバートしてテストが red になることまで確認し PASS
+- Valid と判定、実装エキスパートに修正委託（コミット `c6f521d`）: 救済ロジックを「種類が一致」から「厳密な identity 一致」（step marker は `(kind, step, actor)`、start marker は当初 `(kind, theme)`）に変更、report-only でも gaps を常に表示するよう変更
+- 再レビュー（QA・Craft）: QA が新欠陥を発見 — start marker の identity が `wf` を無視しており、本物と theme だけ同じで wf が異なる捏造 quoted start marker がなお無罪放免になる、同型のギャップが1フィールド分残っていた。Craft は PASS（軽微な二重パースの nit のみ）
+- 2回目の修正委託（コミット `17c5264`）: start marker の identity を `(kind, theme, wf)` に拡張、ついでに `MARKER_QUOTED` イベントに `detail` を直接持たせて二重パースを解消
+- 最終再レビュー（QA）: PASS。残存する救済ロジックの穴なし（`MARKER_START_RE`/`MARKER_STEP_RE` の捕捉フィールドは全て identity に含まれることを確認）
+- コーディネーター自身の最終確認: `pytest scripts/test_check_transcript.py` 211 passed / 1 skipped（環境依存のオプトインのみ）、`coverage combine . scripts` で 100%（604 stmts / 248 branches）を実行して確認
+
+**結論**: 3巡目修正の残り7件はすべて実際に確認済み（うち1件は再現手順の不具合を発見・修正）。この検証プロセス自体で新たに2件の Critical 級欠陥（quoted-marker 救済の過大な一致条件）を発見し、2イテレーションで解消した。チェックスクリプトはこの時点で「判定手段として信用できる」状態にある。task #1 の残り（CC 3回実測・GHC 変換・安定化）は未着手のまま — 測定はユーザー操作のコールドセッションでのみ行うルールのため、本セッションでは実施しない
+- Ready to check off (this step only — 3ラウンド目の修正検証・レビュー1巡): Yes
