@@ -240,3 +240,42 @@ a55fb40d : PASS
 **明示しておくべき未検証事項**（据え置き、今回のラウンドで変わっていない）:
 - 実 GHC transcript による検証は今回も一切行っていない。上記の修正・テストはすべて手組み合成フィクスチャに対するもの
 - Finding 1/2 の「単純に正当化できるルール」（outer 閉じ = inner も閉じる／id 再利用 = 別呼び出し）はいずれも複数の妥当な解釈がありうる中の一つを選んだものであり、実 GHC の挙動がこれと異なる可能性は排除できない。ただし黙って無視する・黙って握り潰すという旧挙動よりは診断可能な状態になっている
+
+### GHC変換・チェックスクリプト拡張: レビュー指摘の修正（fix round 2 — toolCallId再利用の残存ギャップ）
+
+実装担当エージェントとして、コミット `b6ff278`（fix round 1）の `_ghc_scan` に対し QA/Craft/Verification 独立レビューが**それぞれ別個に**再現した同一の残存ギャップ（Finding A）と、Verification のみが追加で発見した1件（Finding B）を修正した自己申告。QA/Craft/Verification の Overall Verdict は付けない。TDD で、各指摘ごとに先に失敗するテストを書いて再現を確認してから実装を直した（`b6ff278` 時点のコードに対して4件とも実際に失敗することを個別に確認済み — 詳細は各 Finding の節）。
+
+**変更ファイル**: `scripts/check_transcript.py`（`_ghc_scan` と新規ヘルパー `_ghc_same_call` のみ）、`scripts/test_check_transcript.py`（GHC セクションに5件追加）。新規 testdata ファイルは追加していない。CC 側のコード・テスト・`.rn/blackpink-setlist-planner/steering.md` は無変更。
+
+**Finding A（Critical, `toolCallId` がまだ開いている間の再利用）**
+
+- Before（`b6ff278`）: 再利用の認識は `tool_call_id in closed_ids`（＝その id の `tool.execution_complete` が既に届いている）の1条件だけに依存していた。まだ完了していない（スタック上でまだ開いている）呼び出しの id を、無関係な別の呼び出しが横取りした場合、`closed_ids` にはまだ入っていないため「同一呼び出しの重複通知」と誤認される。結果:
+  - `toolRequests[]` ループ: `prior is not None and tool_call_id not in closed_ids` で無条件 `continue` — 新しい呼び出し自身のイベントが黙って握り潰される。
+  - `tool.execution_start`: `reused = ... in closed_ids` が `False` のため `event = prior`（＝古い・まだ開いている呼び出しの使い回しの Event）を採用し、その `event.kind == DELEGATE` なら stale な Event の origin フレームをスタックに**2回目の push**をしてしまう。委譲でなければ新しい呼び出し自身の情報は跡形もなく消える。
+  - 実際に `b6ff278` のコードで確認: 「runSubagent (id=tc1) が開いたまま、同じ id で別の runInTerminal が来る」フィクスチャを流すと `run.bash_calls == []`（2件目の呼び出しが消滅）かつ `warnings == ["... 2 runSubagent span(s) never closed ..."]`（本来1個のはずの委譲フレームがスタックに2回積まれ、id衝突に触れる警告は一切出ない）という、指示書が説明した通りの壊れ方を確認した。
+- After: 新規ヘルパー `_ghc_same_call(prior, name, detail)` を追加。GHC の二重通知（`toolRequests[]` → 自身の `tool.execution_start`）は「同一の呼び出し」なら常に同じ `name` と同じ `arguments` を持つという不変を利用し、`name` と（`id` キーを除いた）`detail` の両方が一致する場合のみ「同一呼び出しの正当な重複通知」と判定する。一致しなければ（id がまだ open のままでも）「衝突」として扱う:
+  - `toolRequests[]` ループ・`tool.execution_start` の両方で、`prior is not None` のとき `tool_call_id in closed_ids` なら従来通り「reused for a new call ... already completed」警告、そうでなければ（＝ id がまだ open）新規の「collides with a still-open call」警告を出す。いずれの場合も新しい呼び出し用の Event を作り直し、`calls[tool_call_id]` をそれで上書きする（stale な Event 参照は以後の重複判定に使われなくなる）。
+  - stale な呼び出し自身のスタックフレーム（`runSubagent` だった場合）は一切触らない — それは push された時点で独立したタプルとしてスタックに積まれており、`calls`/`closed_ids` の付け替えとは無関係に生き続ける。新しい呼び出しが `runSubagent` なら、自分自身の `tool.execution_start` で自分のフレームを別途 push する（同じ id が同時に2枚スタックに乗ることもあるが、それぞれ独立して LIFO で解決される）。
+  - After の同フィクスチャでの実際の出力: `run.bash_calls` に2件目の呼び出しが `command="collide"` で残り、`warnings` に `"s.jsonl: line 3: toolCallId tc1 collides with a still-open call (runSubagent): a new call (runInTerminal) announced the same id before the earlier one completed; treated as a distinct event, not a duplicate"`、EOF の未クローズ警告は `"1 runSubagent span(s) never closed"`（stale フレームの二重pushが消え、正しく1個に戻った）。
+- Pinning tests（いずれも `b6ff278` に対して個別に失敗することを確認済み）:
+  - `test_ghc_reused_toolCallId_while_still_open_with_a_plain_call_is_not_merged_into_the_stale_delegation` — 素の2件目呼び出し（`runInTerminal`）による再現。2件目のイベントが残る・衝突警告が出る・stale フレームが二重pushされない（未クローズ警告が「1 runSubagent」であること）を固定
+  - `test_ghc_reused_toolCallId_while_still_open_is_recognised_even_via_execution_start_alone` — `toolRequests[]` の通知なしに `tool.execution_start` だけで衝突が起きるケース。`tool.execution_start` 側の衝突判定分岐を直接カバー（カバレッジ100%化に必要だった1本）
+  - `test_ghc_reused_toolCallId_while_still_open_with_a_second_runSubagent_survives_with_correct_origin` — 2件目も `runSubagent`（別エージェントへの委譲）による再現。両方の委譲が `run.delegations` に残り、それぞれ正しい origin（内側が開いている間は新しい方、閉じた後は古い方に正しく戻る）で marker が付くこと、stale フレームが二重pushされないことを固定
+  - `test_ghc_reused_toolCallId_while_still_open_at_a_non_outermost_nesting_level` — 3階層（L1→L2→L3）のうち、最も外側でも内側でもない**中間層**（L2）の id を、3階層目まで潜った状態で再利用するケース。`bash_calls` の origin 系列・衝突警告・EOF での未クローズ数（「2 runSubagent」＝L1とL2が正しく残る）を固定
+
+**Finding B（Critical, Verification 発見, 迷子/重複 `tool.execution_complete` が無警告で誤った側を閉じる）**
+
+- Before（`b6ff278`）: `tool.execution_complete` の処理は「その `toolCallId` がスタックのどこかに一致するか」だけを見ており、「その id について現在本当に開いているインスタンスがあるか」という概念を持っていなかった。正当な id 再利用（reuse-after-close）で新しいフレームが push された直後に、同じ id に対する余分な/重複した completion が届くと、それが本来閉じるべき何かに対応しているかの検証なしに黙って受理される（`closed_ids.add` だけして何もしない、が唯一のフィードバック）。`--allow-anomalies` すら要らずに汚染が起きる、というのが3人のレビュアーの中でも最も静かなケースだった。
+- After: `tool.execution_complete` の先頭で `tool_call_id not in calls or tool_call_id in closed_ids` を判定するゲートを追加。「その id の呼び出しが一度も記録されていない」または「現在の（最新の）インスタンスが既に閉じられている」場合は、これから閉じるべき「現在開いているもの」が存在しないということなので、`"tool.execution_complete for toolCallId={id} does not match anything currently open ({reason}); treated as a stray/duplicate completion and ignored"` という警告を出してスタックには一切触らずスキップする。マッチする場合のみ、従来通り `closed_ids.add` してスタック探索（トップ一致 or out-of-order 探索）を行う。
+- 実際の before/after: 「委譲Aが開いて正常に閉じる → 同じidが委譲Bに正当に再利用され、Bも正常に開いて閉じる → その後、同じidに対して3件目の完了イベントが来る（何も開いていない）」というフィクスチャで、Before は `run.warnings` にこの3件目について**何の痕跡も残らない**（`closed_ids.add` の空振りのみ）。After では厳密に1件、`"s.jsonl: line 10: tool.execution_complete for toolCallId=reused-id does not match anything currently open (already closed); treated as a stray/duplicate completion and ignored"` という警告が記録される。
+- Pinning test（`b6ff278` に対して失敗することを確認済み、失敗内容は「該当警告が0件」）: `test_ghc_a_stray_duplicate_completion_after_a_legitimate_reuse_is_reported_not_silently_accepted` — 正当な reuse-after-close の後に余分な completion が来るケースで、警告が厳密に1件・`"reused-id"` と `"already closed"` を含むこと、委譲2件が正常にカウントされ origin が `main` に正しく戻っていること、余分な completion によってスタックが誤って触られていないこと（`"never closed"` 警告が出ないこと）を固定
+
+**再検証結果**:
+- `python3 -m pytest scripts/test_check_transcript.py -q` → **272 passed, 1 skipped**（skip は環境依存の opt-in `test_live_project_dir_can_be_scanned_without_crashing` のみ、既存テストは1件も壊れていない）
+- `rm -f .coverage .coverage.* scripts/.coverage.*; COVERAGE_PROCESS_START=$PWD/.coveragerc python3 -m coverage run -m pytest scripts/test_check_transcript.py; python3 -m coverage combine . scripts; python3 -m coverage report -m` → `scripts/check_transcript.py`: **764 stmts / 0 miss（行 100%）、338 branch / 0 partial（分岐 100%）**。fix round 1 終了時点（751 stmts / 330 branch、100%）から増えた分もすべてテストで踏まれている
+- 新規に追加した5件のテストは、`git show b6ff278:scripts/check_transcript.py` に差し替えた状態で個別に実行し、いずれも指示書が説明した理由（2件目のイベント消滅／stale フレームの二重push／余分な completion の無警告受理）で確実に失敗することを確認してから、修正後のコードに戻して全件成功することを確認した
+
+**このジャンルの残存リスクについての率直な評価（過大申告しないための線引き）**:
+- **同一 id が同時に2つ以上「本当に開いている」状態（今回の Finding A の衝突ケース）になった後、それぞれの completion をどちらに対応させるかは、id 以外の情報が transcript に一切無い以上、原理的に決定不能**。今回採用したのは「スタック探索は常にトップから、＝最も新しく push された・最もネストの深いインスタンスを優先して閉じる」という規約で、out-of-order completion の既存処理と同じ考え方の延長に過ぎない。実 GHC がこの前提と異なる closing 順序を意図している可能性は排除できない。
+- Finding B のゲート（`tool_call_id not in calls or tool_call_id in closed_ids`）は、id ごとに「現在のインスタンスが閉じているか」の1ビットしか見ていない。もし Finding A の衝突が起きて同じ id が指すフレームがスタックに2枚同時に乗っている状態で、より新しい方が閉じた**後**に、より古い（stale な）方の本物の completion が届いた場合、`closed_ids` は最新インスタンス基準で「既に閉じている」と判定されてしまい、この古い方の正当な completion を stray/duplicate と誤判定する可能性がある。この複合ケース（Finding A の衝突 + その後の stale 側の正当な close）は今回テストしておらず、意図的に埋めていない残存ギャップとして明示する。
+- 3人のレビュアーがそれぞれ独立に別の角度からこのスタック設計の穴を見つけてきたという実績自体が、「この id ライフサイクル管理の設計にはまだ見つかっていないコーナーケースがある」ことの経験的な証拠だと考えている。今回の2件の修正で「見つかっている指摘」は解消したが、この設計（`toolCallId` 文字列だけをキーにした簡易スタック）そのものに起因する未知の穴が今後も出てくる可能性は高いと見ており、「これで完全」という主張はしない。
