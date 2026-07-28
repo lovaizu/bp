@@ -29,4 +29,4 @@ input: <input>
 
 Wait for the subagent to return a JSON object. Do not modify it.
 OUT: the JSON object from the techtest-echo subagent (unchanged).
-(The techtest-echo subagent emits its own BPTRACE step=2 out line right after its OUT JSON — do not emit it yourself.)
+(The techtest-echo subagent emits its own BPTRACE step=2 out line right before its OUT JSON — do not emit it yourself.)

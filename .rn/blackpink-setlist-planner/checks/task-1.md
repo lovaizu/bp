@@ -428,3 +428,15 @@ JSON オブジェクトの中身・BPTRACE の文字列は1文字も変えてい
 **結論**: 前回の1変数修正（`4b5e81f`、"no surrounding text" の誤読対策）は**反証された** — 文言をこれ以上強めても効果がないと考えられる水準まで明示済みだったにもかかわらず、3/3で同じ欠落が再現した。
 
 **次の1変数仮説（未検証）**: OUT 節の JSON 部分が ` ```json ... ``` ` というフェンス付きコードブロックで指定されている点を疑う。一部のツール呼び出し/エージェント実行ハーネスは、モデルがフェンス付きコードブロックを閉じた時点をその応答の完了点とみなし、以降のプレーンテキスト行の生成を打ち切ることがある。CC 側は同一バイトの指示文（フェンス付き）で3/3成功しているため、フェンス自体が万能の原因ではないが、GHC の `runSubagent`（ネストしたサブエージェント実行）特有の完了判定がこれに反応している可能性を排除できない。`.github/agents/techtest-echo.agent.md` の OUT 節・成功系のみを変更し、JSON 部分のコードフェンスを外してプレーンテキスト行に変更した（JSON のスキーマ・BPTRACE の文字列自体・エラー系・Procedure・IN・frontmatter は無変更）。`.claude/agents/techtest-echo.md`（CC版）・`.github/prompts/techtest.prompt.md`・`scripts/check_transcript.py` は無変更。再測定はユーザー操作のコールドセッション待ち（本エントリ時点では未検証）。
+
+### 再測定（`/rn:up` 再開セッション継続、2026-07-28）— フェンス仮説も反証、診断実験へ切替え
+
+**実行**: ユーザーが同じ手順でコールドセッションを3回実行し、画面出力を貼付。
+
+**① 実transcript確認**（`check_transcript.py --platform ghc`、`46bb6d4b-...`/`a9b9ceca-...`/`77de3041-...`）: `start`・`step=1:actor=main,origin=main`・`delegate:to=techtest-echo` は3/3で機械判定 PASS。`step=2:actor=techtest-echo,origin=subagent:techtest-echo` は3/3とも `not found` で FAIL。3本とも、サブエージェントが `run_in_terminal` を呼んだ直後で記録が途切れる同じパターン（既知のGHC制約＝最終応答ターン未記録）。
+
+**② 画面出力**: 3回とも JSON 部分（`{"status": "ok", "echoed": "..."}`、うち1回はバッククォート付き）は出力されるが、`BPTRACE step=2 out actor=techtest-echo` 行は3/3とも一切現れない。
+
+**結論**: フェンス除去（コミット `b63940e`）も**反証された**。これで独立した2つの1変数仮説（文言の曖昧さ／コードフェンス）がいずれも反証され、症状（JSON部分は毎回生成されるが、直後のプレーンテキスト行だけが必ず欠落する）が3ラウンド連続で完全に同一だった。これは「指示文の解釈」の問題ではなく、**JSONオブジェクトが構造化された返り値として認識された時点で、それに続くテキストが `runSubagent` の返却経路のどこかで切り捨てられている**という、プラットフォーム側の構造的な挙動を示唆する。
+
+**次の診断実験（1変数、ただし今回は"直す"ではなく"切り分ける"ための変更）**: OUT節の2行の**順序を入れ替え**、`BPTRACE step=2 out actor=techtest-echo` を先に、JSON を後に出力させる。もしこれで BPTRACE 行が生き残り JSON が消えるなら「常に2行目が切り捨てられる」という位置依存の挙動であり、もし依然として JSON だけが残り BPTRACE 行が消えるなら「JSON という構造化データが優先的に保持され、それ以外のプレーンテキストが切り捨てられる」という内容依存の挙動であることが切り分けられる。`.github/agents/techtest-echo.agent.md` の OUT 節・成功系のみ変更（JSON スキーマ・BPTRACE文字列・エラー系・Procedure・IN・frontmatterは無変更）。`.claude/agents/techtest-echo.md`・`.github/prompts/techtest.prompt.md`・`scripts/check_transcript.py` は無変更。

@@ -18,10 +18,10 @@ target: vscode
 
 On success, your entire output MUST be exactly these two lines, in this order, and nothing else. Do not put the JSON object in a code block or any other markdown — output both lines as plain text:
 
-Line 1 — the JSON object, as a plain text line (no ```json code fence, no backticks):
-{"status": "ok", "echoed": "<the command's stdout>"}
-Line 2 — the BPTRACE line (mandatory, not optional, not "surrounding text" — it is a required part of the output, not commentary):
+Line 1 — the BPTRACE line (mandatory, not optional — this is the first thing you output, before the JSON):
 BPTRACE step=2 out actor=techtest-echo
+Line 2 — the JSON object, as a plain text line (no ```json code fence, no backticks):
+{"status": "ok", "echoed": "<the command's stdout>"}
 
 "No surrounding text" means: no extra prose, commentary, or markdown before, between, or after these two required lines. It does NOT mean the BPTRACE line may be omitted — omitting it is a failure to complete this step.
 
