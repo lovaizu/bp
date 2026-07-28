@@ -31,6 +31,13 @@ DATA_DEV_SESSION = TESTDATA / "cc-dev-session.jsonl"
 DATA_FILES = [DATA_NO_DELEGATION, DATA_DELEGATION, DATA_UNTYPED_DELEGATION,
               DATA_DEV_SESSION]
 
+# GHC fixtures are hand-built the same way: composed to pin one GHC-schema
+# behaviour each, per docs/cross-platform-agent-design.md §3.1. There is no
+# real GHC transcript anywhere -- nobody has run GHC for this project yet --
+# so these are not recordings and never stand in for one.
+DATA_GHC_NO_DELEGATION = TESTDATA / "ghc-no-delegation.jsonl"
+DATA_GHC_DELEGATION = TESTDATA / "ghc-delegation.jsonl"
+
 # Opt-in only: point this at a live CC project dir to re-check against whatever
 # that machine happens to hold. Never a substitute for the fixtures above.
 LIVE_DIR = os.environ.get("BP_LIVE_CC_PROJECT_DIR")
@@ -2308,3 +2315,683 @@ def test_live_project_dir_can_be_scanned_without_crashing():
     # Then every run comes back with an ordered, numbered event stream
     for run in found.runs:
         assert [e.seq for e in run.events] == list(range(1, len(run.events) + 1))
+
+
+# =============================================================================
+# GitHub Copilot Chat (GHC) parser
+#
+# GHC has no separate subagent file: a delegated subagent's own turns and
+# tool calls sit inline in the same jsonl file, between the delegating
+# `runSubagent` call's `tool.execution_start` and the `tool.execution_complete`
+# carrying the same `toolCallId` (docs/cross-platform-agent-design.md §3.1).
+# There is no live GHC transcript anywhere to record from -- nobody has run
+# GHC for this project -- so every fixture below is hand-built to the
+# documented schema, one behaviour at a time, exactly like the CC fixtures
+# above. Nothing here is "verified against a real GHC session"; that is a
+# separate, not-yet-taken step, called out explicitly in the coordinator's
+# self-check (checks/task-1.md).
+# =============================================================================
+def ghc_assistant(content, tool_requests=None):
+    return {"type": "assistant.message",
+            "data": {"content": content, "toolRequests": tool_requests or []}}
+
+
+def ghc_tool_request(tool_name, tool_call_id, **arguments):
+    return {"name": tool_name, "toolCallId": tool_call_id, "arguments": arguments}
+
+
+def ghc_exec_start(tool_name, tool_call_id, **arguments):
+    return {"type": "tool.execution_start",
+            "data": {"toolName": tool_name, "toolCallId": tool_call_id, "arguments": arguments}}
+
+
+def ghc_exec_complete(tool_call_id, success=True):
+    return {"type": "tool.execution_complete",
+            "data": {"toolCallId": tool_call_id, "success": success}}
+
+
+def ghc_session_start(session_id):
+    return {"type": "session.start", "data": {"sessionId": session_id}}
+
+
+def ghc_happy_run(tmp_path, name="s.jsonl"):
+    """Step 1 done directly, step 2 delegated to techtest-echo inline: the GHC
+    analogue of happy_run() above, same theme/steps/actors."""
+    return write_jsonl(tmp_path / name, [
+        ghc_session_start("ghc-sess-1"),
+        ghc_assistant(START),
+        ghc_assistant("Running step 1.",
+                      [ghc_tool_request("runInTerminal", "tc1",
+                                        command='echo "step1: neon night"')]),
+        ghc_exec_start("runInTerminal", "tc1", command='echo "step1: neon night"'),
+        ghc_exec_complete("tc1"),
+        ghc_assistant(STEP1),
+        ghc_assistant("Delegating step 2.",
+                      [ghc_tool_request("runSubagent", "tc2", name="techtest-echo",
+                                        prompt="input: neon night")]),
+        ghc_exec_start("runSubagent", "tc2", name="techtest-echo", prompt="input: neon night"),
+        ghc_assistant("", [ghc_tool_request("runInTerminal", "tc3",
+                                             command='echo "step2: neon night"')]),
+        ghc_exec_start("runInTerminal", "tc3", command='echo "step2: neon night"'),
+        ghc_exec_complete("tc3"),
+        ghc_assistant('{"status": "ok", "echoed": "step2: neon night"}\n' + STEP2),
+        ghc_exec_complete("tc2"),
+        ghc_assistant("Done."),
+    ])
+
+
+# --- GHC: what counts as a marker (reuses the shared evidence layer) ---------
+def test_ghc_start_marker_is_extracted_from_assistant_message_content(tmp_path):
+    # Given a transcript whose assistant.message content holds the start marker
+    p = write_jsonl(tmp_path / "s.jsonl", [ghc_assistant(START)])
+    # When the run is parsed
+    run = ct.parse_ghc_run(p)
+    # Then exactly one start marker with theme and wf is reported
+    assert len(run.start_markers) == 1
+    assert run.start_markers[0].detail == {"theme": "neon night", "wf": "techtest.md"}
+
+
+def test_ghc_user_message_is_ignored(tmp_path):
+    # Given a user.message that pastes a marker line
+    p = write_jsonl(tmp_path / "s.jsonl", [{"type": "user.message", "data": {"content": START}}])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then only assistant output is evidence
+    assert run.start_markers == []
+
+
+def test_ghc_marker_inside_a_fenced_code_block_is_not_evidence(tmp_path):
+    # Given assistant content that quotes the marker inside a fence -- proof
+    # that GHC reuses the shared evidence_lines/markers_in_text layer instead
+    # of reimplementing fence handling
+    p = write_jsonl(tmp_path / "s.jsonl", [ghc_assistant("Quoting:\n\n```\n" + START + "\n```\n")])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it is recorded as quoted, not evidence
+    assert run.start_markers == []
+    assert len(run.quoted_markers) == 1
+
+
+# --- GHC: tool-call dedup (toolRequests[] + tool.execution_start -> one event) -
+def test_ghc_tool_call_announced_twice_collapses_to_one_event(tmp_path):
+    # Given the same call recorded once in toolRequests[] and again as its own
+    # tool.execution_start, exactly as a real GHC log always records it
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("go", [ghc_tool_request("runInTerminal", "tc1", command="ls")]),
+        ghc_exec_start("runInTerminal", "tc1", command="ls"),
+        ghc_exec_complete("tc1"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it is one event, not two
+    assert len(run.tool_uses) == 1
+    assert run.bash_calls[0].detail["command"] == "ls"
+
+
+def test_ghc_a_tool_request_repeated_in_toolRequests_is_deduped_too(tmp_path):
+    # Given the same toolCallId announced twice in toolRequests[] itself
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("go", [ghc_tool_request("runInTerminal", "tc1", command="ls")]),
+        ghc_assistant("go again", [ghc_tool_request("runInTerminal", "tc1", command="ls")]),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the repeat is still recognised by toolCallId
+    assert len(run.tool_uses) == 1
+
+
+def test_ghc_execution_start_without_a_matching_toolRequests_entry_still_creates_an_event(
+        tmp_path):
+    # Given a tool.execution_start with no earlier toolRequests[] announcement
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_exec_start("runInTerminal", "tc1", command="ls"),
+        ghc_exec_complete("tc1"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the call is still recorded, from the execution_start alone
+    assert len(run.bash_calls) == 1 and run.bash_calls[0].detail["command"] == "ls"
+
+
+def test_ghc_step_markers_reported_in_order_for_a_non_delegated_run(tmp_path):
+    # Given a run that does both steps itself
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant(START),
+        ghc_assistant("Running step 1.",
+                      [ghc_tool_request("runInTerminal", "tc1",
+                                        command='echo "step1: neon night"')]),
+        ghc_exec_start("runInTerminal", "tc1", command='echo "step1: neon night"'),
+        ghc_exec_complete("tc1"),
+        ghc_assistant(STEP1),
+        ghc_assistant("BPTRACE step=2 out actor=main"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then both step markers appear in order, both attributed to main
+    assert [(m.detail["step"], m.detail["actor"]) for m in run.step_markers] == [
+        ("1", "main"), ("2", "main")]
+    assert run.delegations == []
+
+
+# --- GHC: subagent delegation is scoped inline, by toolCallId span -----------
+def test_ghc_inline_subagent_events_are_tagged_with_subagent_origin(tmp_path):
+    # Given a run whose step 2 is delegated to techtest-echo inline
+    run = ct.parse_ghc_run(ghc_happy_run(tmp_path))
+    # When the merged event stream is read
+    kinds = [(e.kind, e.origin) for e in run.events]
+    # Then the subagent's own events sit right after the delegate event,
+    # tagged with its origin
+    delegate_at = kinds.index((ct.DELEGATE, "main"))
+    assert kinds[delegate_at + 1] == (ct.BASH, "subagent:techtest-echo")
+    assert kinds[delegate_at + 2] == (ct.MARKER_STEP, "subagent:techtest-echo")
+    # and nothing before the delegation was tagged as the subagent's
+    assert not any(o.startswith("subagent:") for _, o in kinds[:delegate_at])
+
+
+def test_ghc_origin_reverts_to_main_after_the_delegation_span_closes(tmp_path):
+    # Given a delegation whose span closes, followed by another tool call
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Delegating.",
+                      [ghc_tool_request("runSubagent", "tc1", name="echo-agent")]),
+        ghc_exec_start("runSubagent", "tc1", name="echo-agent"),
+        ghc_assistant("inside", [ghc_tool_request("runInTerminal", "tc2", command="inner")]),
+        ghc_exec_start("runInTerminal", "tc2", command="inner"),
+        ghc_exec_complete("tc2"),
+        ghc_exec_complete("tc1"),
+        ghc_assistant("outside", [ghc_tool_request("runInTerminal", "tc3", command="outer")]),
+        ghc_exec_start("runInTerminal", "tc3", command="outer"),
+        ghc_exec_complete("tc3"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the call inside the span is the subagent's, and the one after the
+    # matching tool.execution_complete is main's again
+    assert [e.origin for e in run.bash_calls] == ["subagent:echo-agent", "main"]
+
+
+def test_ghc_delegation_is_counted_with_target_agent(tmp_path):
+    # Given the happy-path GHC run
+    run = ct.parse_ghc_run(ghc_happy_run(tmp_path))
+    # When delegations are inspected
+    # Then one runSubagent call to techtest-echo is reported
+    assert len(run.delegations) == 1
+    assert run.delegations[0].detail["to"] == "techtest-echo"
+
+
+def test_ghc_happy_run_passes_the_stage_b_expectations(tmp_path):
+    # Given the same run and the stage-B recipe from the module docstring
+    run = ct.parse_ghc_run(ghc_happy_run(tmp_path))
+    ordered = [ct.parse_expectation(s) for s in [
+        "start:theme=neon night,wf=techtest.md",
+        "step=1:actor=main,origin=main",
+        "delegate:to=techtest-echo",
+        "step=2:actor=techtest-echo,origin=subagent:techtest-echo"]]
+    counted = [ct.parse_count_expectation(s) for s in ["start=1", "delegate=1"]]
+    # When it is judged
+    result = ct.evaluate(run, ordered, counted)
+    # Then it passes -- exactly the invariant CC and GHC are meant to share
+    assert result.passed, result.failures + result.anomalies
+
+
+def test_ghc_session_id_is_recorded_from_session_start(tmp_path):
+    # Given the happy-path run, whose session.start records a sessionId
+    run = ct.parse_ghc_run(ghc_happy_run(tmp_path))
+    # When the session ids are read
+    # Then it is available to compare against other runs, as CC's is
+    assert run.session_ids == {"ghc-sess-1"}
+
+
+def test_ghc_scan_tolerates_no_session_ids_set_being_handed_in(tmp_path):
+    # Given a caller of the lower-level scan that does not care about session
+    # ids at all (parse_ghc_run always passes one; this covers the default)
+    p = write_jsonl(tmp_path / "s.jsonl", [ghc_session_start("sid"), ghc_assistant(START)])
+    # When scanned directly without a session_ids set
+    events = ct._ghc_scan(p, [])
+    # Then it does not crash, and the marker is still read
+    assert len(events) == 1
+
+
+def test_ghc_a_delegation_with_no_target_name_gets_an_unmistakable_origin(tmp_path):
+    # Given a runSubagent call whose arguments name no target at all
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("go", [ghc_tool_request("runSubagent", "tc1")]),
+        ghc_exec_start("runSubagent", "tc1"),
+        ghc_assistant(STEP2),
+        ghc_exec_complete("tc1"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then `to` stays empty rather than being smuggled in from the placeholder
+    assert run.delegations[0].detail["to"] == ""
+    assert any(e.origin == f"subagent:{ct.UNKNOWN_AGENT}" for e in run.events)
+    assert any("no target" in w for w in run.warnings)
+
+
+def test_ghc_a_runSubagent_execution_start_without_a_tool_call_id_is_warned_about(tmp_path):
+    # Given a runSubagent execution_start that never recorded a toolCallId
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        {"type": "tool.execution_start",
+         "data": {"toolName": "runSubagent", "arguments": {"name": "echo-agent"}}},
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the delegation still counts, but the span cannot be scoped, and
+    # that gap is stated rather than silently guessed at
+    assert run.delegations and run.delegations[0].detail["to"] == "echo-agent"
+    assert any("toolCallId" in w for w in run.warnings)
+
+
+def test_ghc_an_unclosed_delegation_span_is_warned_about(tmp_path):
+    # Given a runSubagent span with no matching tool.execution_complete
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("go", [ghc_tool_request("runSubagent", "tc1", name="techtest-echo")]),
+        ghc_exec_start("runSubagent", "tc1", name="techtest-echo"),
+        ghc_assistant(STEP2),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it is named as a gap, not silently closed at end of file
+    assert any("never closed" in w for w in run.warnings)
+    assert run.events[-1].origin == "subagent:techtest-echo"
+
+
+# --- GHC: event kinds are normalised the same way as CC ----------------------
+def test_ghc_event_kinds_are_normalised_by_the_parser(tmp_path):
+    # Given a run using a delegation tool, a shell tool and another tool
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("a", [ghc_tool_request("runSubagent", "t1", name="x")]),
+        ghc_exec_start("runSubagent", "t1", name="x"),
+        ghc_exec_complete("t1"),
+        ghc_assistant("b", [ghc_tool_request("runInTerminal", "t2", command="ls")]),
+        ghc_exec_start("runInTerminal", "t2", command="ls"),
+        ghc_exec_complete("t2"),
+        ghc_assistant("c", [ghc_tool_request("readFile", "t3", path="a.md")]),
+        ghc_exec_start("readFile", "t3", path="a.md"),
+        ghc_exec_complete("t3"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the kinds carry the meaning and the GHC tool names are display only
+    assert [e.kind for e in run.events] == [ct.DELEGATE, ct.BASH, ct.TOOL]
+    assert [e.name for e in run.events] == ["runSubagent", "runInTerminal", "readFile"]
+
+
+def test_ghc_a_tool_request_without_a_name_falls_back_to_the_tool_kind(tmp_path):
+    # Given a toolRequests entry missing both name and arguments
+    p = write_jsonl(tmp_path / "s.jsonl", [ghc_assistant("go", [{"toolCallId": "tc1"}])])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it still becomes an event, just an unclassified one
+    assert run.tool_uses[0].kind == ct.TOOL and run.tool_uses[0].name == ""
+
+
+# --- GHC: parsing robustness --------------------------------------------------
+def test_ghc_broken_json_line_is_skipped_with_a_warning(tmp_path):
+    # Given a transcript with one corrupt line
+    p = tmp_path / "s.jsonl"
+    p.write_text(json.dumps(ghc_assistant(START)) + "\n{not json\n"
+                 + json.dumps(ghc_assistant(STEP1)) + "\n", encoding="utf-8")
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the good lines survive and the bad one is reported
+    assert len(run.start_markers) == 1 and len(run.step_markers) == 1
+    assert any("line 2" in w for w in run.warnings)
+
+
+def test_ghc_empty_file_yields_an_empty_run(tmp_path):
+    # Given an empty transcript
+    p = tmp_path / "s.jsonl"
+    p.write_text("", encoding="utf-8")
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then there is nothing to report and no crash
+    assert run.events == [] and run.start_markers == []
+
+
+def test_ghc_missing_file_raises_transcript_error(tmp_path):
+    # Given a path that does not exist
+    # When parsed
+    # Then a TranscriptError is raised, exactly like the CC parser
+    with pytest.raises(ct.TranscriptError):
+        ct.parse_ghc_run(tmp_path / "nope.jsonl")
+
+
+def test_ghc_non_dict_top_level_entries_are_tolerated(tmp_path):
+    # Given a stray non-object JSON line ahead of a good one
+    p = tmp_path / "s.jsonl"
+    p.write_text('"stray string"\n' + json.dumps(ghc_assistant(START)) + "\n", encoding="utf-8")
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it is skipped rather than crashing the parser
+    assert len(run.start_markers) == 1
+
+
+def test_ghc_session_start_without_a_session_id_is_tolerated(tmp_path):
+    # Given a session.start with no sessionId field
+    p = write_jsonl(tmp_path / "s.jsonl", [{"type": "session.start", "data": {}},
+                                            ghc_assistant(START)])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then nothing is recorded for it, and parsing continues normally
+    assert run.session_ids == set() and len(run.start_markers) == 1
+
+
+def test_ghc_assistant_message_without_a_data_object_is_tolerated(tmp_path):
+    # Given an assistant.message entry with no data field at all
+    p = write_jsonl(tmp_path / "s.jsonl", [{"type": "assistant.message"}, ghc_assistant(START)])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it is skipped rather than crashing, and the rest is still read
+    assert len(run.start_markers) == 1
+
+
+def test_ghc_missing_tool_requests_field_is_tolerated(tmp_path):
+    # Given an assistant.message with content but no toolRequests key
+    p = write_jsonl(tmp_path / "s.jsonl", [{"type": "assistant.message", "data": {"content": START}}])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the marker is still read and no tool event is invented
+    assert len(run.start_markers) == 1 and run.tool_uses == []
+
+
+def test_ghc_a_non_dict_tool_request_entry_is_tolerated(tmp_path):
+    # Given a toolRequests list holding a non-object entry
+    p = write_jsonl(tmp_path / "s.jsonl",
+                    [{"type": "assistant.message", "data": {"content": "", "toolRequests": ["oops"]}}])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it is skipped rather than crashing
+    assert run.tool_uses == []
+
+
+def test_ghc_a_tool_request_without_a_tool_call_id_is_skipped(tmp_path):
+    # Given a toolRequests entry with no toolCallId to dedup or scope by
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("go", [{"name": "runInTerminal", "arguments": {"command": "ls"}}]),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then it produces no event at all, rather than one nothing can dedup against
+    assert run.tool_uses == []
+
+
+def test_ghc_execution_start_without_a_tool_call_id_does_not_crash(tmp_path):
+    # Given a tool.execution_start and .execution_complete that never carried
+    # a toolCallId
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        {"type": "tool.execution_start", "data": {"toolName": "runInTerminal",
+                                                    "arguments": {"command": "ls"}}},
+        {"type": "tool.execution_complete", "data": {}},
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the call is still recorded once, and nothing crashes trying to pop
+    # a span that was never pushed
+    assert len(run.bash_calls) == 1
+
+
+# --- GHC: platform registration ------------------------------------------------
+def test_ghc_platform_is_registered():
+    # Given the platform registry
+    platform = ct.PLATFORMS["ghc"]
+    # When it is used
+    # Then all three hooks resolve to the GHC implementations
+    assert platform.parse is ct.parse_ghc_run
+    assert platform.transcripts is ct.ghc_transcripts
+    assert callable(platform.project_dir)
+
+
+# --- GHC: project-dir discovery (path-matching logic only; see note below) --
+# There is no live VS Code install anywhere this suite runs, so none of this
+# is "verified against a real workspaceStorage". What is tested is the
+# matching logic itself, against directories built by hand with tmp_path:
+# given a `workspace.json`, does the right wsHash come back.
+def write_workspace_json(storage_dir, ws_hash, folder):
+    d = storage_dir / ws_hash
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "workspace.json").write_text(json.dumps({"folder": folder}), encoding="utf-8")
+    return d
+
+
+def test_ghc_workspace_dir_matches_by_folder_path_suffix(tmp_path):
+    # Given a synthetic VS Code User dir whose workspace.json names this repo
+    # through a WSL-style remote URI
+    user_dir = tmp_path / "User"
+    ws = write_workspace_json(user_dir / "workspaceStorage", "abc123",
+                              "vscode-remote://wsl%2BUbuntu/home/u/work/bp")
+    # When the repo path is looked up
+    found = ct._ghc_workspace_dir(user_dir, "/home/u/work/bp")
+    # Then the matching hash directory is returned
+    assert found == ws
+
+
+def test_ghc_workspace_dir_returns_none_without_a_match(tmp_path):
+    # Given a workspace.json naming a different repository entirely
+    user_dir = tmp_path / "User"
+    write_workspace_json(user_dir / "workspaceStorage", "abc123",
+                         "vscode-remote://wsl%2BUbuntu/home/u/other-repo")
+    # When the repo path is looked up
+    # Then nothing matches
+    assert ct._ghc_workspace_dir(user_dir, "/home/u/work/bp") is None
+
+
+def test_ghc_workspace_dir_ignores_a_corrupt_workspace_json(tmp_path):
+    # Given one hash dir whose workspace.json is not valid JSON, and one that
+    # is a genuine match
+    user_dir = tmp_path / "User"
+    bad = user_dir / "workspaceStorage" / "bad1"
+    bad.mkdir(parents=True)
+    (bad / "workspace.json").write_text("{not json", encoding="utf-8")
+    write_workspace_json(user_dir / "workspaceStorage", "good1", "/home/u/work/bp")
+    # When the repo path is looked up
+    found = ct._ghc_workspace_dir(user_dir, "/home/u/work/bp")
+    # Then the corrupt one is skipped rather than raising, and the real match
+    # is still found
+    assert found == user_dir / "workspaceStorage" / "good1"
+
+
+def test_ghc_workspace_dir_ignores_a_workspace_json_that_is_not_an_object(tmp_path):
+    # Given a workspace.json that parses but is not a JSON object
+    user_dir = tmp_path / "User"
+    listy = user_dir / "workspaceStorage" / "listy1"
+    listy.mkdir(parents=True)
+    (listy / "workspace.json").write_text("[1, 2, 3]", encoding="utf-8")
+    write_workspace_json(user_dir / "workspaceStorage", "good1", "/home/u/work/bp")
+    # When the repo path is looked up
+    found = ct._ghc_workspace_dir(user_dir, "/home/u/work/bp")
+    # Then it is skipped, not mistaken for a match
+    assert found == user_dir / "workspaceStorage" / "good1"
+
+
+def test_ghc_workspace_dir_ignores_a_non_string_folder_field(tmp_path):
+    # Given a workspace.json whose folder field is not a string
+    user_dir = tmp_path / "User"
+    nully = user_dir / "workspaceStorage" / "null1"
+    nully.mkdir(parents=True)
+    (nully / "workspace.json").write_text(json.dumps({"folder": None}), encoding="utf-8")
+    write_workspace_json(user_dir / "workspaceStorage", "good1", "/home/u/work/bp")
+    # When the repo path is looked up
+    found = ct._ghc_workspace_dir(user_dir, "/home/u/work/bp")
+    # Then it is skipped, not mistaken for a match
+    assert found == user_dir / "workspaceStorage" / "good1"
+
+
+def test_ghc_workspace_dir_skips_a_hash_dir_without_workspace_json(tmp_path):
+    # Given a hash dir with no workspace.json at all, alongside a real match
+    user_dir = tmp_path / "User"
+    (user_dir / "workspaceStorage" / "empty1").mkdir(parents=True)
+    write_workspace_json(user_dir / "workspaceStorage", "good1", "/home/u/work/bp")
+    # When the repo path is looked up
+    found = ct._ghc_workspace_dir(user_dir, "/home/u/work/bp")
+    # Then it is skipped, not mistaken for a match
+    assert found == user_dir / "workspaceStorage" / "good1"
+
+
+def test_ghc_workspace_dir_missing_storage_dir_returns_none(tmp_path):
+    # Given a User dir that has no workspaceStorage at all
+    # When the repo path is looked up
+    # Then it is simply no match, not an error
+    assert ct._ghc_workspace_dir(tmp_path / "User", "/home/u/work/bp") is None
+
+
+def test_ghc_project_dir_finds_the_matching_workspace_among_several_user_dirs(tmp_path):
+    # Given several candidate User dirs, only one of which names this repo
+    other = tmp_path / "other-user"
+    write_workspace_json(other / "workspaceStorage", "nope", "/home/u/elsewhere")
+    mine = tmp_path / "my-user"
+    write_workspace_json(mine / "workspaceStorage", "mine1", "/home/u/work/bp")
+    # When the project dir is resolved
+    found = ct.ghc_project_dir("/home/u/work/bp", user_dirs=[other, mine])
+    # Then the transcripts dir under the matching one comes back
+    assert found == mine / "workspaceStorage" / "mine1" / "GitHub.copilot-chat" / "transcripts"
+
+
+def test_ghc_project_dir_with_no_match_returns_a_path_find_runs_will_reject(tmp_path):
+    # Given a candidate that does not name this repo at all
+    user_dir = tmp_path / "User"
+    write_workspace_json(user_dir / "workspaceStorage", "x", "/home/u/somewhere-else")
+    # When the project dir is resolved
+    found = ct.ghc_project_dir("/home/u/work/bp", user_dirs=[user_dir])
+    # Then it is a path that cannot exist -- find_runs reports it the same
+    # way it reports any other missing project directory
+    assert not found.is_dir()
+    with pytest.raises(ct.TranscriptError):
+        ct.find_runs(found, 1, ct.parse_ghc_run, ct.ghc_transcripts)
+
+
+def test_ghc_project_dir_with_empty_user_dirs_falls_back_to_a_default_base(tmp_path):
+    # Given no candidate User dirs at all
+    # When the project dir is resolved
+    found = ct.ghc_project_dir("/home/u/work/bp", user_dirs=[])
+    # Then it still returns a Path rather than raising or returning None
+    assert found.parts[-4:] == ("workspaceStorage", "<no-matching-workspace>",
+                                "GitHub.copilot-chat", "transcripts")
+
+
+def test_ghc_project_dir_honours_the_env_override_for_the_user_dir(tmp_path, monkeypatch):
+    # Given BP_GHC_VSCODE_USER_DIR pointing at a synthetic User dir
+    user_dir = tmp_path / "custom-user"
+    write_workspace_json(user_dir / "workspaceStorage", "envhash", "/home/u/work/bp")
+    monkeypatch.setenv("BP_GHC_VSCODE_USER_DIR", str(user_dir))
+    # When the project dir is resolved with no explicit user_dirs
+    found = ct.ghc_project_dir("/home/u/work/bp")
+    # Then the override is searched (and found) without touching a real install
+    assert found == user_dir / "workspaceStorage" / "envhash" / "GitHub.copilot-chat" / "transcripts"
+
+
+def test_ghc_user_dirs_includes_the_vscode_server_default(monkeypatch):
+    # Given no override set
+    monkeypatch.delenv("BP_GHC_VSCODE_USER_DIR", raising=False)
+    # When the candidate list is built
+    dirs = ct._ghc_user_dirs()
+    # Then the Linux/WSL-side default is always one of them
+    assert Path.home() / ".vscode-server" / "data" / "User" in dirs
+
+
+def test_listdir_safe_returns_entries_sorted(tmp_path):
+    # Given a directory with two entries
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a").mkdir()
+    # When it is listed
+    # Then the entries come back sorted
+    assert ct._listdir_safe(tmp_path) == [tmp_path / "a", tmp_path / "b"]
+
+
+def test_listdir_safe_returns_empty_for_a_missing_directory(tmp_path):
+    # Given a path that does not exist
+    # When it is listed
+    # Then it is simply empty, not an error -- one unusable candidate location
+    # must not abort the search for the others
+    assert ct._listdir_safe(tmp_path / "nope") == []
+
+
+def test_listdir_safe_returns_empty_for_an_unreadable_directory(tmp_path):
+    # Given a directory this process may not list
+    d = tmp_path / "locked"
+    d.mkdir()
+    d.chmod(0o000)
+    try:
+        if os.access(d, os.R_OK):
+            pytest.skip("cannot make a directory unreadable here (running as root?)")
+        # When it is listed
+        # Then it is empty rather than raising
+        assert ct._listdir_safe(d) == []
+    finally:
+        d.chmod(0o755)
+
+
+def test_ghc_transcripts_lists_jsonl_files_only(tmp_path):
+    # Given a directory holding a transcript and an unrelated file
+    (tmp_path / "s1.jsonl").write_text("", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("", encoding="utf-8")
+    # When transcripts are listed
+    found = sorted(p.name for p in ct.ghc_transcripts(tmp_path))
+    # Then only the jsonl file is offered
+    assert found == ["s1.jsonl"]
+
+
+# --- GHC: CLI end to end -------------------------------------------------------
+def test_cli_platform_ghc_end_to_end(tmp_path):
+    # Given a GHC-shaped happy-path transcript, named explicitly
+    p = ghc_happy_run(tmp_path)
+    # When the CLI is invoked with --platform ghc and the techtest expectations
+    r = run_cli(str(p), "--platform", "ghc",
+                "--expect", "start:wf=techtest.md",
+                "--expect", "step=1:actor=main",
+                "--expect", "step=2:actor=techtest-echo",
+                "--expect-delegations", "1")
+    # Then it exits 0 and says PASS, exactly like the CC equivalent
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "PASS" in r.stdout
+
+
+def test_cli_latest_scans_a_ghc_project_dir(tmp_path):
+    # Given a GHC project dir holding one marked run
+    ghc_happy_run(tmp_path, name="sess.jsonl")
+    # When --latest --platform ghc is used against it
+    r = run_cli("--latest", "1", "--project-dir", str(tmp_path), "--platform", "ghc",
+                "--expect", "step=2:actor=techtest-echo")
+    # Then the run is found and passes
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "sess.jsonl" in r.stdout
+
+
+# --- GHC: committed fixtures (documented schema, hand-composed contents) -----
+def test_ghc_fixture_no_delegation_matches_the_transcript():
+    # Given the committed GHC fixture that does every step itself
+    run = ct.parse_ghc_run(DATA_GHC_NO_DELEGATION)
+    # When parsed
+    # Then the extraction matches what the file actually contains
+    assert run.warnings == []
+    assert [m.detail for m in run.start_markers] == [
+        {"theme": "neon night", "wf": "techtest.md"}]
+    assert [(m.detail["step"], m.detail["actor"], m.origin) for m in run.step_markers] == [
+        ("1", "main", "main"), ("2", "main", "main")]
+    assert run.delegations == []
+    assert len(run.bash_calls) == 2
+
+
+def test_ghc_fixture_delegation_merges_the_inline_subagent_events():
+    # Given the committed GHC fixture that delegates step 2
+    run = ct.parse_ghc_run(DATA_GHC_DELEGATION)
+    # When parsed
+    # Then the delegation and the subagent's own inline tool call are visible
+    assert run.warnings == []
+    assert [d.detail["to"] for d in run.delegations] == ["techtest-echo"]
+    sub_bash = [e for e in run.bash_calls if e.origin == "subagent:techtest-echo"]
+    assert len(sub_bash) == 1 and len(run.bash_calls) == 2
+
+
+def test_ghc_fixture_delegation_passes_the_stage_b_expectations():
+    # Given the same committed fixture and the stage-B recipe from the docstring
+    run = ct.parse_ghc_run(DATA_GHC_DELEGATION)
+    ordered = [ct.parse_expectation(s) for s in [
+        "start:theme=neon night,wf=techtest.md",
+        "step=1:actor=main,origin=main",
+        "delegate:to=techtest-echo",
+        "step=2:actor=techtest-echo,origin=subagent:techtest-echo"]]
+    counted = [ct.parse_count_expectation(s) for s in ["start=1", "delegate=1"]]
+    # When it is judged
+    result = ct.evaluate(run, ordered, counted)
+    # Then it passes -- the same invariant, extracted from the GHC schema
+    assert result.passed, result.failures + result.anomalies

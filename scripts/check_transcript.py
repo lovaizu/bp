@@ -523,6 +523,243 @@ def cc_transcripts(project_dir) -> Iterable[Path]:
 
 
 # --------------------------------------------------------------------------- #
+# GitHub Copilot Chat (GHC) parser
+# --------------------------------------------------------------------------- #
+# GHC writes one flat jsonl file per session: there is no separate subagent
+# file the way CC has one, so there is no splice step here. A `runSubagent`
+# call opens an origin span at its `tool.execution_start` and every event that
+# follows -- in the same file, interleaved with whatever else the parent does
+# -- is tagged with that span's origin until the `tool.execution_complete`
+# carrying the same `toolCallId` closes it again.
+GHC_AGENT_TOOL_NAMES = {"runSubagent"}
+GHC_BASH_TOOL_NAMES = {"runInTerminal"}
+
+
+def _ghc_tool_event(name, arguments):
+    """Normalise a GHC tool call into (kind, detail). The only GHC tool-name table."""
+    if name in GHC_AGENT_TOOL_NAMES:
+        return DELEGATE, {"to": arguments.get("name") or ""}
+    if name in GHC_BASH_TOOL_NAMES:
+        return BASH, {"command": arguments.get("command", "")}
+    return TOOL, {}
+
+
+def _ghc_scan(path, warnings, session_ids=None) -> list:
+    """Turn one GHC jsonl file into events, resolving subagent origin inline.
+
+    A tool call is announced twice in a real GHC log -- once inside the
+    `assistant.message` that decided to make it, as an entry of
+    `data.toolRequests[]`, and again as its own `type=tool.execution_start` --
+    so the two are collapsed to one Event, keyed on `toolCallId`: whichever is
+    seen first creates the Event, the second is recognised as the same call
+    and produces nothing.
+
+    A `runSubagent` call's `tool.execution_start` pushes an origin frame
+    (`toolCallId`, `subagent:<name>`) onto a stack; every event read after
+    that -- markers, tool calls, nested delegations -- is tagged with the
+    innermost open frame's origin, until a `tool.execution_complete` carrying
+    the same `toolCallId` pops it again. A span still open at end of file is
+    an anomaly, not a silent guess about where it would have closed.
+    """
+    path = Path(path)
+    events: list = []
+    stack: list = [(None, MAIN)]  # (toolCallId or None, origin)
+    calls: dict = {}  # toolCallId -> the Event already emitted for it
+
+    for line_no, entry in _read_jsonl(path, warnings):
+        if not isinstance(entry, dict):
+            continue
+        etype = entry.get("type")
+        data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+
+        if etype == "session.start":
+            if session_ids is not None:
+                session_id = data.get("sessionId")
+                if isinstance(session_id, str) and session_id:
+                    session_ids.add(session_id)
+            continue
+
+        origin = stack[-1][1]
+
+        if etype == "assistant.message":
+            content = data.get("content")
+            if isinstance(content, str):
+                for kind, detail in markers_in_text(content):
+                    events.append(Event(0, kind, origin, str(path), line_no, detail=detail))
+            requests = data.get("toolRequests")
+            if isinstance(requests, list):
+                for req in requests:
+                    if not isinstance(req, dict):
+                        continue
+                    tool_call_id = req.get("toolCallId") or ""
+                    if not tool_call_id or tool_call_id in calls:
+                        continue
+                    name = req.get("name") or ""
+                    arguments = (req.get("arguments")
+                                if isinstance(req.get("arguments"), dict) else {})
+                    kind, detail = _ghc_tool_event(name, arguments)
+                    detail["id"] = tool_call_id
+                    event = Event(0, kind, origin, str(path), line_no, name=name, detail=detail)
+                    events.append(event)
+                    calls[tool_call_id] = event
+
+        elif etype == "tool.execution_start":
+            tool_call_id = data.get("toolCallId") or ""
+            event = calls.get(tool_call_id) if tool_call_id else None
+            if event is None:
+                name = data.get("toolName") or ""
+                arguments = (data.get("arguments")
+                            if isinstance(data.get("arguments"), dict) else {})
+                kind, detail = _ghc_tool_event(name, arguments)
+                detail["id"] = tool_call_id
+                event = Event(0, kind, origin, str(path), line_no, name=name, detail=detail)
+                events.append(event)
+                if tool_call_id:
+                    calls[tool_call_id] = event
+            if event.kind == DELEGATE:
+                if not tool_call_id:
+                    warnings.append(
+                        f"{path.name}: line {line_no}: runSubagent has no toolCallId, "
+                        f"so its inline events cannot be scoped to it")
+                else:
+                    agent_type = event.detail.get("to") or UNKNOWN_AGENT
+                    if not event.detail.get("to"):
+                        warnings.append(
+                            f"{path.name}: line {line_no}: runSubagent call names no "
+                            f"target, so its events are attributed to origin "
+                            f"subagent:{UNKNOWN_AGENT}")
+                    stack.append((tool_call_id, f"subagent:{agent_type}"))
+
+        elif etype == "tool.execution_complete":
+            tool_call_id = data.get("toolCallId") or ""
+            if tool_call_id and stack[-1][0] == tool_call_id:
+                stack.pop()
+
+    if len(stack) > 1:
+        warnings.append(
+            f"{path.name}: {len(stack) - 1} runSubagent span(s) never closed "
+            f"(no matching tool.execution_complete)")
+    return events
+
+
+def parse_ghc_run(path) -> Run:
+    """Parse a GitHub Copilot Chat transcript.
+
+    Unlike CC, there is nothing to splice: a delegated subagent's turns and
+    tool calls already sit inline in this same file, between the delegating
+    `runSubagent` call's `tool.execution_start` and `tool.execution_complete`,
+    so `_ghc_scan` resolves origin as it reads rather than as a second pass.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise TranscriptError(f"no such transcript: {path}")
+    warnings: list[str] = []
+    session_ids: set[str] = set()
+    events = _ghc_scan(path, warnings, session_ids)
+    return finalize_run(path, "ghc", events, warnings, session_ids)
+
+
+def _listdir_safe(path) -> list:
+    """Every entry directly inside `path`, sorted; empty if `path` cannot be
+    listed at all (missing, not a directory, unreadable).
+
+    Searching several candidate VS Code install locations only works if one
+    that happens to be unusable on this machine is silently skipped, rather
+    than aborting the whole search.
+    """
+    try:
+        return sorted(Path(path).iterdir())
+    except OSError:
+        return []
+
+
+def _ghc_user_dirs() -> list:
+    """Every VS Code User dir this machine might store GHC transcripts under.
+
+    Per docs/cross-platform-agent-design.md §3.1: `~/.vscode-server/data/User`
+    on the Linux/WSL side, or `/mnt/<drive>/Users/<user>/AppData/Roaming/Code/User`
+    reached through the Windows filesystem from inside WSL.
+    `BP_GHC_VSCODE_USER_DIR` overrides/prepends a directory for testing or an
+    unusual install layout.
+
+    This function's own output is not exercised by any test in this suite --
+    there is no VS Code install anywhere this runs, so the *candidate list*
+    is unverified. What is unit tested is the matching logic that consumes
+    it (`_ghc_workspace_dir`, `ghc_project_dir`), against synthetic
+    directories built with `tmp_path`.
+    """
+    candidates = []
+    override = os.environ.get("BP_GHC_VSCODE_USER_DIR")
+    if override:
+        candidates.append(Path(override))
+    candidates.append(Path.home() / ".vscode-server" / "data" / "User")
+    for drive in _listdir_safe("/mnt"):
+        for user_home in _listdir_safe(drive / "Users"):
+            appdata = user_home / "AppData" / "Roaming" / "Code" / "User"
+            if appdata.is_dir():
+                candidates.append(appdata)
+    return candidates
+
+
+def _ghc_workspace_dir(user_dir, repo_path):
+    """Return the workspaceStorage/<wsHash> dir whose workspace.json names this
+    repo, or None if `user_dir` holds no such match.
+
+    GHC's `folder` field is a URI (`vscode-remote://wsl%2B<distro>/<path>`
+    over WSL, a plain path otherwise). This checks only that it *ends in* the
+    repo's own resolved path rather than parsing the URI scheme, since the
+    scheme varies with how VS Code is connected but the trailing path does
+    not.
+    """
+    repo_path = str(Path(repo_path).resolve())
+    storage = Path(user_dir) / "workspaceStorage"
+    if not storage.is_dir():
+        return None
+    for ws_dir in sorted(p for p in storage.iterdir() if p.is_dir()):
+        meta = ws_dir / "workspace.json"
+        if not meta.is_file():
+            continue
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        folder = data.get("folder") if isinstance(data, dict) else None
+        if isinstance(folder, str) and folder.rstrip("/").endswith(repo_path):
+            return ws_dir
+    return None
+
+
+def ghc_project_dir(repo_path, user_dirs=None) -> Path:
+    """<user dir>/workspaceStorage/<wsHash>/GitHub.copilot-chat/transcripts.
+
+    `<wsHash>` is found by matching `workspace.json`'s `folder` field against
+    the repo path (docs/cross-platform-agent-design.md §3.1); unlike CC's
+    slug, it is not a pure string transform, so this has to search the
+    filesystem. `user_dirs` exists for tests: it points the search at a
+    synthetic tree instead of a real VS Code install, which this environment
+    does not have; the default (None) is `_ghc_user_dirs()`.
+
+    When nothing matches, this returns a path that cannot exist rather than
+    raising, so `find_runs` reports the usual "no such project directory"
+    instead of this function inventing a second error path for the same
+    situation.
+    """
+    dirs = list(user_dirs) if user_dirs is not None else _ghc_user_dirs()
+    for user_dir in dirs:
+        ws_dir = _ghc_workspace_dir(user_dir, repo_path)
+        if ws_dir is not None:
+            return ws_dir / "GitHub.copilot-chat" / "transcripts"
+    base = dirs[0] if dirs else Path.home() / ".vscode-server" / "data" / "User"
+    return Path(base) / "workspaceStorage" / "<no-matching-workspace>" / \
+        "GitHub.copilot-chat" / "transcripts"
+
+
+def ghc_transcripts(project_dir) -> Iterable[Path]:
+    """Every file in a GHC transcripts directory that could be a session log."""
+    return Path(project_dir).glob("*.jsonl")
+
+
+# --------------------------------------------------------------------------- #
 # Platform registry
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
@@ -535,7 +772,10 @@ class Platform:
     transcripts: Callable[[Path], Iterable[Path]]
 
 
-PLATFORMS = {"cc": Platform("cc", parse_cc_run, cc_project_dir, cc_transcripts)}
+PLATFORMS = {
+    "cc": Platform("cc", parse_cc_run, cc_project_dir, cc_transcripts),
+    "ghc": Platform("ghc", parse_ghc_run, ghc_project_dir, ghc_transcripts),
+}
 
 
 # --------------------------------------------------------------------------- #
