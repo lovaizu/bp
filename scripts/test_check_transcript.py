@@ -2518,6 +2518,47 @@ def test_ghc_delegation_is_counted_with_target_agent(tmp_path):
     assert run.delegations[0].detail["to"] == "techtest-echo"
 
 
+def test_ghc_nested_subagent_spans_are_attributed_layer_by_layer(tmp_path):
+    # Given an outer runSubagent opened, then a second runSubagent opened
+    # before the first closes, both closing in correct LIFO order -- the GHC
+    # analogue of test_nested_subagent_events_are_spliced_recursively for CC
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Delegating outer.",
+                      [ghc_tool_request("runSubagent", "tc-outer", name="outer-agent")]),
+        ghc_exec_start("runSubagent", "tc-outer", name="outer-agent"),
+        ghc_assistant("outer working",
+                      [ghc_tool_request("runInTerminal", "tc-a", command="in outer")]),
+        ghc_exec_start("runInTerminal", "tc-a", command="in outer"),
+        ghc_exec_complete("tc-a"),
+        ghc_assistant("Delegating inner.",
+                      [ghc_tool_request("runSubagent", "tc-inner", name="inner-agent")]),
+        ghc_exec_start("runSubagent", "tc-inner", name="inner-agent"),
+        ghc_assistant("inner working",
+                      [ghc_tool_request("runInTerminal", "tc-b", command="in inner")]),
+        ghc_exec_start("runInTerminal", "tc-b", command="in inner"),
+        ghc_exec_complete("tc-b"),
+        ghc_exec_complete("tc-inner"),  # inner closes first, correct LIFO order
+        ghc_assistant("outer working again",
+                      [ghc_tool_request("runInTerminal", "tc-c", command="still outer")]),
+        ghc_exec_start("runInTerminal", "tc-c", command="still outer"),
+        ghc_exec_complete("tc-c"),
+        ghc_exec_complete("tc-outer"),  # outer closes last
+        ghc_assistant("back home",
+                      [ghc_tool_request("runInTerminal", "tc-d", command="main again")]),
+        ghc_exec_start("runInTerminal", "tc-d", command="main again"),
+        ghc_exec_complete("tc-d"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then each bash call is attributed to the layer that was open when it ran,
+    # reverting correctly as each span closes, and nothing is flagged as an anomaly
+    assert [e.origin for e in run.bash_calls] == [
+        "subagent:outer-agent", "subagent:inner-agent",
+        "subagent:outer-agent", "main",
+    ]
+    assert run.warnings == []
+
+
 def test_ghc_happy_run_passes_the_stage_b_expectations(tmp_path):
     # Given the same run and the stage-B recipe from the module docstring
     run = ct.parse_ghc_run(ghc_happy_run(tmp_path))
@@ -2593,6 +2634,98 @@ def test_ghc_an_unclosed_delegation_span_is_warned_about(tmp_path):
     # Then it is named as a gap, not silently closed at end of file
     assert any("never closed" in w for w in run.warnings)
     assert run.events[-1].origin == "subagent:techtest-echo"
+
+
+# --- GHC: out-of-order tool.execution_complete (review finding #1) ----------
+def test_ghc_out_of_order_completion_closes_the_matched_frame_and_everything_above_it(tmp_path):
+    # Given an outer runSubagent opened, then an inner one nested inside it, but
+    # the OUTER's tool.execution_complete arrives before the inner's own ever
+    # does -- a genuine out-of-order completion, not a well-formed LIFO close
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("Delegating outer.",
+                      [ghc_tool_request("runSubagent", "tc-outer", name="outer-agent")]),
+        ghc_exec_start("runSubagent", "tc-outer", name="outer-agent"),
+        ghc_assistant("Delegating inner.",
+                      [ghc_tool_request("runSubagent", "tc-inner", name="inner-agent")]),
+        ghc_exec_start("runSubagent", "tc-inner", name="inner-agent"),
+        ghc_assistant("still inside inner",
+                      [ghc_tool_request("runInTerminal", "tc-mid", command="inside inner")]),
+        ghc_exec_start("runInTerminal", "tc-mid", command="inside inner"),
+        ghc_exec_complete("tc-mid"),
+        ghc_exec_complete("tc-outer"),  # out of order: tc-inner never closes first
+        ghc_assistant("after the out-of-order close",
+                      [ghc_tool_request("runInTerminal", "tc-after", command="after")]),
+        ghc_exec_start("runInTerminal", "tc-after", command="after"),
+        ghc_exec_complete("tc-after"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the call made while inner was genuinely open is attributed to inner,
+    # and the outer's out-of-order close pops BOTH frames -- not just its own --
+    # so the call after it reverts all the way to main, not to the dangling outer
+    assert [e.origin for e in run.bash_calls] == ["subagent:inner-agent", "main"]
+    # And the anomaly is stated, naming the id and how many frames it took with it,
+    # instead of being silently discarded or silently corrected
+    warning = next(w for w in run.warnings if "closed out of order" in w)
+    assert "toolCallId=tc-outer" in warning
+    assert "popped 2 frame(s)" in warning
+    assert "subagent:outer-agent" in warning and "subagent:inner-agent" in warning
+    # And there is no separate, misleading "never closed" warning for tc-inner --
+    # the out-of-order close already accounted for it closing too
+    assert not any("never closed" in w for w in run.warnings)
+
+
+# --- GHC: toolCallId reuse across two unrelated calls (review finding #2) ---
+def test_ghc_a_reused_toolCallId_across_two_unrelated_calls_does_not_erase_the_second(tmp_path):
+    # Given a runInTerminal call that completes normally under id "reused-id",
+    # and later, an unrelated runSubagent delegation to a different agent that
+    # happens to reuse that same, already-closed id
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("first call",
+                      [ghc_tool_request("runInTerminal", "reused-id", command="first")]),
+        ghc_exec_start("runInTerminal", "reused-id", command="first"),
+        ghc_exec_complete("reused-id"),
+        ghc_assistant("Delegating, reusing the id.",
+                      [ghc_tool_request("runSubagent", "reused-id", name="second-agent")]),
+        ghc_exec_start("runSubagent", "reused-id", name="second-agent"),
+        ghc_assistant("BPTRACE step=2 out actor=second-agent"),
+        ghc_exec_complete("reused-id"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the delegation is NOT silently dropped: it is recorded as its own
+    # delegate event, its marker is scoped to the subagent it actually belongs
+    # to, and the collision is visible as a warning rather than a clean,
+    # warning-free run that hides a vanished delegation
+    assert len(run.delegations) == 1
+    assert run.delegations[0].detail["to"] == "second-agent"
+    assert run.step_markers[0].origin == "subagent:second-agent"
+    assert any("reused-id" in w and "reused" in w for w in run.warnings)
+
+
+def test_ghc_a_reused_toolCallId_is_recognised_even_via_execution_start_alone(tmp_path):
+    # Given a runInTerminal call that completes normally under id "reused-id",
+    # and later a runSubagent tool.execution_start reuses that same id directly
+    # -- with no toolRequests[] announcement in between -- exercising the reuse
+    # check inside the tool.execution_start branch itself, not just the one in
+    # the toolRequests[] loop
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        ghc_assistant("first call",
+                      [ghc_tool_request("runInTerminal", "reused-id", command="first")]),
+        ghc_exec_start("runInTerminal", "reused-id", command="first"),
+        ghc_exec_complete("reused-id"),
+        ghc_exec_start("runSubagent", "reused-id", name="second-agent"),
+        ghc_assistant("BPTRACE step=2 out actor=second-agent"),
+        ghc_exec_complete("reused-id"),
+    ])
+    # When parsed
+    run = ct.parse_ghc_run(p)
+    # Then the delegation is recognised as its own distinct event, not silently
+    # merged into the earlier, already-closed runInTerminal call
+    assert len(run.delegations) == 1
+    assert run.delegations[0].detail["to"] == "second-agent"
+    assert run.step_markers[0].origin == "subagent:second-agent"
+    assert any("reused-id" in w and "reused" in w for w in run.warnings)
 
 
 # --- GHC: event kinds are normalised the same way as CC ----------------------
@@ -2711,8 +2844,12 @@ def test_ghc_a_tool_request_without_a_tool_call_id_is_skipped(tmp_path):
     ])
     # When parsed
     run = ct.parse_ghc_run(p)
-    # Then it produces no event at all, rather than one nothing can dedup against
+    # Then it produces no event at all, rather than one nothing can dedup against,
+    # but the drop is stated rather than silently swallowed (consistent with every
+    # other missing-field case in this parser: runSubagent-with-no-id,
+    # no-delegation-target, unclosed-span-at-eof all warn too)
     assert run.tool_uses == []
+    assert any("toolCallId" in w for w in run.warnings)
 
 
 def test_ghc_execution_start_without_a_tool_call_id_does_not_crash(tmp_path):
@@ -2739,6 +2876,23 @@ def test_ghc_platform_is_registered():
     assert platform.parse is ct.parse_ghc_run
     assert platform.transcripts is ct.ghc_transcripts
     assert callable(platform.project_dir)
+
+
+def test_platforms_registry_holds_exactly_cc_and_ghc():
+    # Given the platform registry
+    # When its keys are inspected
+    # Then it holds exactly the two supported platforms -- no more, no fewer
+    assert set(ct.PLATFORMS) == {"cc", "ghc"}
+
+
+def test_cli_rejects_an_unknown_platform_value(tmp_path):
+    # Given a transcript that would otherwise parse fine
+    p = happy_run(tmp_path)
+    # When the CLI is invoked with a --platform value that is not registered
+    r = run_cli(str(p), "--platform", "not-a-real-platform")
+    # Then argparse rejects it before any parsing is attempted
+    assert r.returncode == 2
+    assert "invalid choice" in r.stderr
 
 
 # --- GHC: project-dir discovery (path-matching logic only; see note below) --
