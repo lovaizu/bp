@@ -146,3 +146,28 @@ f71b8f11 : FAIL  x expected 0 x delegate, got 1; observed: [...] delegate -> bp-
 
 **結論**: 3巡目修正の残り7件はすべて実際に確認済み（うち1件は再現手順の不具合を発見・修正）。この検証プロセス自体で新たに2件の Critical 級欠陥（quoted-marker 救済の過大な一致条件）を発見し、2イテレーションで解消した。チェックスクリプトはこの時点で「判定手段として信用できる」状態にある。task #1 の残り（CC 3回実測・GHC 変換・安定化）は未着手のまま — 測定はユーザー操作のコールドセッションでのみ行うルールのため、本セッションでは実施しない
 - Ready to check off (this step only — 3ラウンド目の修正検証・レビュー1巡): Yes
+
+### CC: コールドセッション3回実測（2026-07-28、`/rn:up` 再開セッションで判定のみ実施）
+
+**スコープ**: Step「CC: コールドセッションで3回実行し、チェックスクリプトで `BPTRACE start`・Step1（非委譲・actor=main）・Step2（委譲・actor=techtest-echo）が3/3で正しく成立するか確認する」。実行（`/techtest`）はユーザーが本セッション開始前に別セッションで実施済み。本セッションでは①候補発見→②判定の2段階手順のみ実施（steering.md Rules に従い、本セッション内で `/techtest` は実行していない）。
+
+**① 候補発見**（`--latest 10 --since <直前のpauseコミット時刻 2026-07-28T12:54:58+09:00> --dry-run`）: 5件が窓内で発見された。
+- `c9a6d7e8-...jsonl`（14:14:06 JST）／`a55fb40d-...jsonl`（14:14:45）／`23c62418-...jsonl`（14:15:35）— この3件を `/techtest` の実ランと判定（下記②で確認）
+- `ce08ade0-...jsonl`（14:16:37）— 除外。実行して確認したところ `start_markers: []`（0件）、delegations は `Explore`/`general-purpose` への8件で `techtest-echo` ではない。`/techtest` とは無関係の別セッション（git log 調査・`steering.md` 読解等）と判断
+- `929efeac-...jsonl`（14:17:26）— 除外。本 `/rn:up` セッション自身の transcript（コールドセッションではない。steering.md Rules「このセッション内で実行してはいけない」により測定対象から除外）
+
+**② 判定**（3本を明示パスで指定、`--expect 'start:theme=,wf=techtest.md'` `--expect 'step=1:actor=main,origin=main'` `--expect 'delegate:to=techtest-echo'` `--expect 'step=2:actor=techtest-echo,origin=subagent:techtest-echo'` `--expect-count 'start=1'` `--expect-count 'delegate=1'` `--verbose`）:
+
+```
+c9a6d7e8 : PASS
+a55fb40d : PASS
+23c62418 : PASS
+3/3 run(s) PASS -> PASS
+```
+
+3本とも event order は `start(main) → bash(main) → step=1(main) → delegate(main→techtest-echo) → bash(subagent) → step=2(subagent:techtest-echo)` で一致、malformed 0・quoted 0。
+
+**独立検証**（Verification expert, dry-run, 本判定とは別に生の transcript を自分で走査): CONFIRMED。除外2件は生JSONLを自作スキャナで走査し、`type=assistant` かつ `type=text` ブロックに実マーカーが0件であることを確認（`BPTRACE` 文字列自体は `tool_result`／ファイル内容の引用に70件超あったが、判定対象になる形は皆無）。採用3件は主transcript・サブエージェントtranscriptの生バイトを直接読み、start/step1/delegate/step2 の各行番号・timestamp・sessionId・parentUuid を1件ずつ手で突き合わせ、step=2 がサブエージェント自身の発話（親の転記ではない）であることをタイムスタンプの前後関係で確認。3セッションがそれぞれ独立したコールドセッション（各 sessionId 固有、`/techtest` 展開前の会話履歴なし）であることも確認済み。
+
+**結論**: task #1 Step「CC: コールドセッションで3回実行し...3/3で正しく成立するか確認する」は **完了（3/3 PASS）**。次Step「3/3で安定しなければ、指示文を1変数ずつ修正し再測定する」は条件不成立（3/3で安定）のため未実施（該当なし）。次は「安定したパターンをGHCへ変換し、GHCでも同様に3回...確認する」に進む。
+- Ready to check off (このStepのみ): Yes

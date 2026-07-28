@@ -48,8 +48,8 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] CC用の最小検証コマンド（1WF・2ステップ：Step1は非委譲・Step2は委譲）とサブエージェント1つを作成する（`/techtest`）
 - [x] 最小チェックスクリプト（`scripts/check_transcript.py`）を作成する。CC transcript を読み、`BPTRACE start`／`BPTRACE step=<n> out actor=<...>` 行と Agent tool_use 呼び出し回数を機械的に抽出・報告する（bp非依存、汎用。目視・都度のワンライナーで確認しない）
 - [x] 3ラウンド目の修正（偽PASS/偽FAIL 12件）を検証し、レビューを1巡させる。残り7件を確認（うち1件は `.coveragerc` 再現手順の実バグを発見・修正、コミット `45ee83f`）。QA/Craft/Verification の敵対的レビュー1巡で新たに2件の Critical 級欠陥（quoted-marker救済ロジックの過大一致）を発見し2イテレーションで解消（コミット `c6f521d` → `17c5264`）。詳細は `checks/task-1.md`
-- [ ] CC: コールドセッションで3回実行し、チェックスクリプトで `BPTRACE start`・Step1（非委譲・actor=main）・Step2（委譲・actor=techtest-echo）が3/3で正しく成立するか確認する
-- [ ] 3/3で安定しなければ、指示文を1変数ずつ修正し再測定する
+- [x] CC: コールドセッションで3回実行し、チェックスクリプトで `BPTRACE start`・Step1（非委譲・actor=main）・Step2（委譲・actor=techtest-echo）が3/3で正しく成立するか確認する
+- [ ] 3/3で安定しなければ、指示文を1変数ずつ修正し再測定する（該当なし: 3/3で安定したため未実施）
 - [ ] 安定したパターンを GHC へ変換し、GHC でも同様に3回、チェックスクリプト（GHC transcript 対応を追加）で確認する
 - [ ] self-check (OK/NG per completion criterion, record in checks/task-1.md)
 - [ ] QA expert review (subagent)
@@ -270,7 +270,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 <!-- rn:state -->
 - **Status**: paused
 - **Date**: 2026-07-28
-- **Last completed**: #1 の「3ラウンド目の修正を検証し、レビューを1巡させる」。コミット `45ee83f`（`.coveragerc` 再現手順バグ修正）→ `c6f521d`（quoted-marker救済ロジックの過大一致を修正、report-onlyでのgaps握り潰しを修正）→ `17c5264`（start marker identityの`wf`抜け漏れを修正）。QA/Craft/Verificationの敵対的レビュー1巡完了、最終PASS。`checks/task-1.md`に詳細記録
-- **Next**: #1 の「CC: コールドセッションで3回実行し、チェックスクリプトで `BPTRACE start`・Step1（非委譲・actor=main）・Step2（委譲・actor=techtest-echo）が3/3で正しく成立するか確認する」— **ユーザー操作が必要**（steering.md Rules「測定は必ずユーザー操作のコールドセッションで行う」により、このセッション内では実行できない）。ユーザーは新しい（コールドな）セッションで `/techtest` を3回実行してほしい。その後の判定はこのセッション（または再開後のセッション）で `scripts/check_transcript.py --latest 3 --dry-run` → 確定パスを明示して判定、の2段階で行う
-- **Notes**: ブランチ `feature/blackpink-setlist-planner`（push済み、リモートと同期）。チェックスクリプトは現時点で211 passed/1 skipped、`scripts/check_transcript.py` 100%カバレッジ（`coverage combine . scripts`で確認、`combine`単独だと`scripts/`配下のサブプロセス分が握り潰され99%に誤表示される点に注意）。3/3で安定しなければ指示文を1変数ずつ修正し再測定（steering.md該当ステップ）。安定確認後はGHCへの変換に進む。
+- **Last completed**: #1 の「CC: コールドセッションで3回実行し...3/3で正しく成立するか確認する」。ユーザーが本セッション開始前に別の3セッションで `/techtest` を実行済み（`c9a6d7e8-...`/`a55fb40d-...`/`23c62418-...`、14:14〜14:15 JST）。本セッションで①候補発見（`--since <直前pauseコミット時刻> --dry-run`、5件中2件除外: 無関係セッション`ce08ade0-...`・本セッション自身`929efeac-...`）→②確定3本を明示パスで判定 → `3/3 run(s) PASS -> PASS`。Verification expert（独立、生transcript手読み）でCONFIRMED。詳細・生データ突き合わせは`checks/task-1.md`「CC: コールドセッション3回実測」節
+- **Next**: #1 の「3/3で安定しなければ」ステップは該当なし（安定済み）。次は「安定したパターンをGHCへ変換し、GHCでも同様に3回、チェックスクリプト（GHC transcript対応を追加）で確認する」。GHC transcript パーサ（現状`--platform`は`cc`のみ対応）の実装が必要。GHC側での`/techtest`実行もユーザー操作のコールドセッションが必要（本セッション内では実行できない）
+- **Notes**: ブランチ `feature/blackpink-setlist-planner`（push済み、リモートと同期）。チェックスクリプトは211 passed/1 skipped、`scripts/check_transcript.py` 100%カバレッジ（`coverage combine . scripts`で確認）。CC側の安定パターン（`techtest.md`の指示文）はこのまま流用してGHCへ変換する。
 <!-- rn:state-end -->
