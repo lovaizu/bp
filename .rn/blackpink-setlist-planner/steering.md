@@ -268,9 +268,9 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 # State
 
 <!-- rn:state -->
-- **Status**: paused
-- **Date**: 2026-07-28
-- **Last completed**: GHC側コールドセッション1回目3実行分の判定・原因究明・1変数修正。実データ検証で `check_transcript.py` の実バグ2件を発見・修正（`toolRequests[].arguments`が実データではdictでなくJSONエンコード済み文字列だった件、`runSubagent`のターゲット名キーが`name`でなく`agentName`だった件。コミット`f399918`、テスト277 passed/1 skipped、対象ファイル100%カバレッジ）。修正後、実transcript3本で`start`(1回)・`step=1`(非委譲・actor=main)・`delegate:to=techtest-echo`は3/3で機械判定PASSを確認。ただし`step=2 out actor=techtest-echo`マーカーはtranscript側だけでなくユーザー提供の画面出力（Copilot Chat実表示）でも3/3とも欠落（サブエージェントがJSON出力後にBPTRACE行を出さず終了）と確認 — 記録漏れでなく実際の出力失敗。原因仮説（`.github/agents/techtest-echo.agent.md`のOUT節「no surrounding text」がBPTRACE行自体を禁止と誤読され得る曖昧さ）に基づき1変数修正（コミット`4b5e81f`、GHC側ファイルのみ・CC側は無変更）。詳細は`checks/task-1.md`の該当節
-- **Next**: 修正後の指示文でGHC側コールドセッションをもう3回実行してもらう（ユーザー操作、VS Code + GitHub Copilot Chatで`.github/prompts/techtest.prompt.md`）。実行後 `check_transcript.py --platform ghc --latest N --since <実行後の時刻> --dry-run` → 確定パス明示で判定。判定コマンドは`--expect 'start:wf=techtest.md'`（themeは実行時の入力文言依存のため固定値を要求しない）・`--expect 'step=1:actor=main,origin=main'`・`--expect 'delegate:to=techtest-echo'`・`--expect-count 'start=1'`・`--expect-count 'delegate=1'`に加え、今回`step=2:actor=techtest-echo,origin=subagent:techtest-echo`も追加できるか確認する（前回未着手だった箇所）。3/3 PASS（BPTRACE step=2マーカー含む）でStepをチェックオフし、task #1全体のself-check/QA/Craft/Verificationレビューへ。再度0/3や不安定なら、原因を都度1変数で切り分けて再修正する
-- **Notes**: ブランチ`feature/blackpink-setlist-planner`（push済み、同期済み）。GHC transcript発見（`ghc_project_dir`のVS Code workspaceStorage探索）は今回実際に機能した（実機検証済みに更新）。`--allow-anomalies`を使わないと「1 runSubagent span never closed」が毎回anomaly扱いになる点に注意 — これはGHCの既知の記録欠落（セッション最後の応答ターン）に起因するため許容してよいが、`--allow-anomalies`は「サンプル自体の欠落は救わない」ため判定の信頼性は保たれる。
+- **Status**: not suspended
+- **Date**: YYYY-MM-DD
+- **Last completed**: #N description
+- **Next**: #N description
+- **Notes**: bounded forward pointer — branch/PR, next concrete action, open blockers, user-deferred paths, open questions / pending decisions not yet captured in `design.md`; not a re-narration of the session (that lives in `git log`)
 <!-- rn:state-end -->
