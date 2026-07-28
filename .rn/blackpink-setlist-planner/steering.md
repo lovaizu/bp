@@ -49,7 +49,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 - [x] 最小チェックスクリプト（`scripts/check_transcript.py`）を作成する。CC transcript を読み、`BPTRACE start`／`BPTRACE step=<n> out actor=<...>` 行と Agent tool_use 呼び出し回数を機械的に抽出・報告する（bp非依存、汎用。目視・都度のワンライナーで確認しない）
 - [x] 3ラウンド目の修正（偽PASS/偽FAIL 12件）を検証し、レビューを1巡させる。残り7件を確認（うち1件は `.coveragerc` 再現手順の実バグを発見・修正、コミット `45ee83f`）。QA/Craft/Verification の敵対的レビュー1巡で新たに2件の Critical 級欠陥（quoted-marker救済ロジックの過大一致）を発見し2イテレーションで解消（コミット `c6f521d` → `17c5264`）。詳細は `checks/task-1.md`
 - [x] CC: コールドセッションで3回実行し、チェックスクリプトで `BPTRACE start`・Step1（非委譲・actor=main）・Step2（委譲・actor=techtest-echo）が3/3で正しく成立するか確認する
-- [ ] 3/3で安定しなければ、指示文を1変数ずつ修正し再測定する（該当なし: 3/3で安定したため未実施）
+- [ ] 3/3で安定しなければ、指示文を1変数ずつ修正し再測定する（CC: 該当なし・3/3で安定。GHC: 該当あり・1回目のGHC実測でstep=2マーカー0/3、指示文修正済み、再測定待ち。下記State参照）
 - [ ] 安定したパターンを GHC へ変換し、GHC でも同様に3回、チェックスクリプト（GHC transcript 対応を追加）で確認する
 - [ ] self-check (OK/NG per completion criterion, record in checks/task-1.md)
 - [ ] QA expert review (subagent)
@@ -270,7 +270,7 @@ BLACKPINKセットリスト・プランナーは検証用サンプル。プラ�
 <!-- rn:state -->
 - **Status**: paused
 - **Date**: 2026-07-28
-- **Last completed**: #1「GHCへ変換...」Stepのコード実装側（`--platform ghc`対応・techtest GHCポート、コミット`9d197b3`〜`17ee89b`、fix 3ラウンド経て最終レビューREADY TO CHECK OFF）。詳細は`checks/task-1.md`GHC関連節
-- **Next**: 同Stepの残り半分（GHC側コールドセッション3回実測）— ユーザーがVS Code + GitHub Copilot Chatで `.github/prompts/techtest.prompt.md` を3回実行。実行後 `check_transcript.py --platform ghc --latest N --since <実行後の時刻> --dry-run` → 確定パス明示で判定（CC実測時と同じ2段階）。3/3 PASSでStepをチェックオフし、task #1全体のself-check/QA/Craft/Verificationレビューへ
-- **Notes**: ブランチ`feature/blackpink-setlist-planner`（push済み、同期済み）。GHC transcript発見（`ghc_project_dir`のVS Code workspaceStorage探索）の候補ディレクトリ一覧は実機未検証 — 発見に失敗したら`--project-dir`直接指定か`BP_GHC_VSCODE_USER_DIR`で上書き（docstring参照）。
+- **Last completed**: GHC側コールドセッション1回目3実行分の判定・原因究明・1変数修正。実データ検証で `check_transcript.py` の実バグ2件を発見・修正（`toolRequests[].arguments`が実データではdictでなくJSONエンコード済み文字列だった件、`runSubagent`のターゲット名キーが`name`でなく`agentName`だった件。コミット`f399918`、テスト277 passed/1 skipped、対象ファイル100%カバレッジ）。修正後、実transcript3本で`start`(1回)・`step=1`(非委譲・actor=main)・`delegate:to=techtest-echo`は3/3で機械判定PASSを確認。ただし`step=2 out actor=techtest-echo`マーカーはtranscript側だけでなくユーザー提供の画面出力（Copilot Chat実表示）でも3/3とも欠落（サブエージェントがJSON出力後にBPTRACE行を出さず終了）と確認 — 記録漏れでなく実際の出力失敗。原因仮説（`.github/agents/techtest-echo.agent.md`のOUT節「no surrounding text」がBPTRACE行自体を禁止と誤読され得る曖昧さ）に基づき1変数修正（コミット`4b5e81f`、GHC側ファイルのみ・CC側は無変更）。詳細は`checks/task-1.md`の該当節
+- **Next**: 修正後の指示文でGHC側コールドセッションをもう3回実行してもらう（ユーザー操作、VS Code + GitHub Copilot Chatで`.github/prompts/techtest.prompt.md`）。実行後 `check_transcript.py --platform ghc --latest N --since <実行後の時刻> --dry-run` → 確定パス明示で判定。判定コマンドは`--expect 'start:wf=techtest.md'`（themeは実行時の入力文言依存のため固定値を要求しない）・`--expect 'step=1:actor=main,origin=main'`・`--expect 'delegate:to=techtest-echo'`・`--expect-count 'start=1'`・`--expect-count 'delegate=1'`に加え、今回`step=2:actor=techtest-echo,origin=subagent:techtest-echo`も追加できるか確認する（前回未着手だった箇所）。3/3 PASS（BPTRACE step=2マーカー含む）でStepをチェックオフし、task #1全体のself-check/QA/Craft/Verificationレビューへ。再度0/3や不安定なら、原因を都度1変数で切り分けて再修正する
+- **Notes**: ブランチ`feature/blackpink-setlist-planner`（push済み、同期済み）。GHC transcript発見（`ghc_project_dir`のVS Code workspaceStorage探索）は今回実際に機能した（実機検証済みに更新）。`--allow-anomalies`を使わないと「1 runSubagent span never closed」が毎回anomaly扱いになる点に注意 — これはGHCの既知の記録欠落（セッション最後の応答ターン）に起因するため許容してよいが、`--allow-anomalies`は「サンプル自体の欠落は救わない」ため判定の信頼性は保たれる。
 <!-- rn:state-end -->
