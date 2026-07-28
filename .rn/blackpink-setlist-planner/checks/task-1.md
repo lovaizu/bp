@@ -171,3 +171,35 @@ a55fb40d : PASS
 
 **結論**: task #1 Step「CC: コールドセッションで3回実行し...3/3で正しく成立するか確認する」は **完了（3/3 PASS）**。次Step「3/3で安定しなければ、指示文を1変数ずつ修正し再測定する」は条件不成立（3/3で安定）のため未実施（該当なし）。次は「安定したパターンをGHCへ変換し、GHCでも同様に3回...確認する」に進む。
 - Ready to check off (このStepのみ): Yes
+
+### GHC変換・チェックスクリプト拡張（実装, 自己申告）
+
+実装担当エージェントとして、`scripts/check_transcript.py` の GHC 対応拡張と `.claude/commands/techtest.md` / `.claude/agents/techtest-echo.md` の GHC 移植を行った自己申告。QA/Craft/Verification のレビュー（Overall Verdict）は付けない — コーディネーターの担当。
+
+**変更ファイル**:
+- `scripts/check_transcript.py` — `parse_ghc_run` / `_ghc_scan` / `_ghc_tool_event` / `ghc_project_dir` / `_ghc_workspace_dir` / `_ghc_user_dirs` / `_listdir_safe` / `ghc_transcripts` を追加し、`PLATFORMS["ghc"]` として登録。既存 CC 側のコード・docstring は無変更（`--platform ghc` の1エントリを追加しただけ）
+- `scripts/test_check_transcript.py` — GHC 用の pytest ケースをファイル末尾に追加（`DATA_GHC_*` 定数も冒頭に追加）。既存 CC のテストは無変更
+- `scripts/testdata/ghc-no-delegation.jsonl` / `scripts/testdata/ghc-delegation.jsonl` — 新規。手組みの合成フィクスチャ（後述）
+- `.github/prompts/techtest.prompt.md` — 新規。`.claude/commands/techtest.md` の GHC 移植
+- `.github/agents/techtest-echo.agent.md` — 新規。`.claude/agents/techtest-echo.md` の GHC 移植
+
+| Completion criterion（指示書 §1） | 自己申告 | 根拠 |
+|---|---|---|
+| `--platform ghc` が GHC transcript（インライン subagent 混在の1ファイル）を発見・解析し、正しい `origin` で start/step/delegate/bash イベントをファイル順に生成する | OK | `test_ghc_start_marker_is_extracted_from_assistant_message_content`、`test_ghc_step_markers_reported_in_order_for_a_non_delegated_run`、`test_ghc_inline_subagent_events_are_tagged_with_subagent_origin`、`test_ghc_fixture_no_delegation_matches_the_transcript`、`test_ghc_fixture_delegation_merges_the_inline_subagent_events`、`test_cli_platform_ghc_end_to_end` で確認。いずれも手組みの合成フィクスチャに対する確認であり、実 GHC セッションでの確認ではない |
+| ツール呼び出しの重複排除（`toolRequests[]` と対になる `tool.execution_start` が `toolCallId` で1イベントに収束する） | OK | `test_ghc_tool_call_announced_twice_collapses_to_one_event`（同一 `toolCallId` が両方の構造に出現するケースで1イベントであることを直接assert）、`test_ghc_a_tool_request_repeated_in_toolRequests_is_deduped_too`（`toolRequests[]` 側だけの重複も収束することを確認） |
+| サブエージェント委譲: `runSubagent` の `tool.execution_start`〜同一 `toolCallId` の `tool.execution_complete` 間のインラインイベントが `origin=subagent:<name>` になり、区間外は `origin=main` のまま | OK | `test_ghc_inline_subagent_events_are_tagged_with_subagent_origin`（区間内が `subagent:techtest-echo`、区間前が全て `main`）、`test_ghc_origin_reverts_to_main_after_the_delegation_span_closes`（区間を閉じた後の呼び出しが `main` に戻ることを確認）。CC の `_cc_splice`（別ファイルの再帰スプライス）は流用せず、GHC 用に `toolCallId` キーのスタックで区間をインライン解決する専用ロジック（`_ghc_scan` 内）を新規実装 |
+| 既存 CC の挙動・テストが無退行 | OK | `python3 -m pytest scripts/test_check_transcript.py -q` = 261 passed, 1 skipped（skip は環境依存の opt-in `test_live_project_dir_can_be_scanned_without_crashing` のみ、GHC追加前と同じ理由・同じ1件）。既存 CC のテスト関数・フィクスチャは1つも変更していない（追加のみ） |
+| GHC 解析ロジックに手組み合成フィクスチャによる専用テストがある | OK | `scripts/test_check_transcript.py` に GHC 専用セクションを追加（プレーン非委譲ラン・1回委譲＋インラインイベント・`toolCallId` 重複排除・分割ファイル方式は不採用の3ケースを TDD で各1挙動ずつ固定）。フィクスチャは `scripts/testdata/ghc-no-delegation.jsonl` / `ghc-delegation.jsonl`（実データではなく手組みの合成データである旨をコメントとdocstringに明記） |
+| GHC 側ファイル発見（`--latest`・project-dir 解決）が仕様通りに実装され、パス突き合わせロジックが `tmp_path` 合成ディレクトリで単体テストされている（実VS Code環境での検証は主張しない） | OK（ただし実機未検証と明記） | `_ghc_workspace_dir`（`workspace.json` の `folder` フィールドをリポジトリパスの末尾一致で突き合わせ）と `ghc_project_dir`（複数 `user_dirs` 候補から探索、`BP_GHC_VSCODE_USER_DIR` 環境変数オーバーライド、未マッチ時は `find_runs` が拒否できる非存在パスを返す）を `tmp_path` 合成ディレクトリで11ケース単体テスト。`_ghc_user_dirs()` が返す実候補（`~/.vscode-server/data/User`、`/mnt/<drive>/Users/*/AppData/Roaming/Code/User`）自体は**実 VS Code インストールで検証していない** — このマシンに VS Code はなく、`test_ghc_user_dirs_includes_the_vscode_server_default` は既定候補の1つが常にリストに入ることのみを確認。自己申告として明記: 「path-matching logic は tmp_path で検証済み／既定候補リストと実 workspaceStorage への実接続は未検証」 |
+| GHC 側2ファイル（`.github/prompts/techtest.prompt.md` / `.github/agents/techtest-echo.agent.md`）が存在し frontmatter が妥当で、本文（IN/OUT契約・BPTRACE行）が CC 版と実質同一 | OK | `python3 -c "import yaml; ..."` で両ファイルの frontmatter を `yaml.safe_load` してパース成功を確認済み。BPTRACE行（`BPTRACE start theme="<input>" wf=techtest.md` / `BPTRACE step=1 out actor=main` / `BPTRACE step=2 out actor=techtest-echo`）と OUT の JSON ブロック（```json {"status":...}```）は CC 版と文字列比較で完全一致を確認。変更したのは §6.3 の表通り: エントリポイントの呼び出し文言（"Use the Agent tool to invoke" → "Run the `techtest-echo` subagent (runSubagent) with"、"Do not use the Agent tool" → "Do not use the runSubagent tool"）、`$ARGUMENTS` 行の削除と「ユーザー入力が末尾に付与される」前提への書き換え、frontmatter（`allowed-tools`→`tools:[...]`＋ツール名変換、`command:`削除、`agent: agent`追加、`target: vscode`追加） |
+
+**カバレッジ**: `COVERAGE_PROCESS_START=$PWD/.coveragerc python3 -m coverage run -m pytest scripts/test_check_transcript.py` → `python3 -m coverage combine . scripts && python3 -m coverage report -m`。
+`scripts/check_transcript.py`: **727 stmts / 0 miss（行 100%）、316 branch / 0 partial（分岐 100%）**。GHC 追加分を含めた全体で 100% を維持（CC 側からの退行なし）。
+テスト: **261 passed, 1 skipped**（skip はGHC追加前から存在する環境依存 opt-in テスト1件のみ）。
+
+**明示しておくべき未検証事項**（過大申告しないための線引き）:
+- 実 GHC transcript による検証は一切行っていない（そもそも存在しない）。上表の「OK」は全て「手組み合成フィクスチャに対して仕様通り動くことの確認」であり、「実 GHC セッションでの動作確認」ではない
+- `_ghc_user_dirs()` が返す既定候補パス（`~/.vscode-server/data/User`、`/mnt/*/Users/*/AppData/Roaming/Code/User`）は実 VS Code インストールに対して検証していない。検証したのはそれを消費する側の突き合わせロジック（`_ghc_workspace_dir`／`ghc_project_dir`）のみ
+- GHC の `runSubagent` 引数のフィールド名（本実装では `name`/`prompt` を仮定）は設計ドキュメントに明記がなく、実 GHC の挙動が異なれば `_ghc_tool_event` の1関数を直すだけで追従できる設計にしてある
+- GHC の「thinking相当ブロック」の有無は設計ドキュメントに記載がないため実装・テストとも対象外（CC の `thinking` ブロック除外と対称的な仕組みは持たない）
+- ツール stdout の分割ファイル（`content.txt`）読み込みは未実装。CC 側も `tool_result` の内容をイベント生成に使わない（`_cc_scan` は tool_use 側のみを見る）のと対称的に、GHC も `tool.execution_start`/`toolRequests[]` の引数のみでイベントを作るため、この分割ファイルは Event ストリームの生成に不要と判断した（読む必要のある対象がそもそも無い）
