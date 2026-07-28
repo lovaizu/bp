@@ -1371,6 +1371,40 @@ def test_cli_two_copies_of_one_session_are_one_run_not_two(tmp_path):
     assert "a.jsonl, b.jsonl" in r.stdout and "one run, not 2" in r.stdout
 
 
+def test_cli_report_only_still_surfaces_a_duplicate_session_in_text(tmp_path):
+    # Given the same two-copies-of-one-session setup, but with no expectations
+    # at all -- report-only / plain listing mode
+    original = TESTDATA / "cc-no-delegation.jsonl"
+    a = tmp_path / "a.jsonl"
+    b = tmp_path / "b.jsonl"
+    a.write_bytes(original.read_bytes())
+    b.write_bytes(original.read_bytes())
+    # When the CLI is run bare, with no --expect/--expect-count/--expect-delegations
+    r = run_cli(str(a), str(b))
+    # Then it still exits 0 (reporting is legitimate, no verdict was asked for)
+    assert r.returncode == 0, r.stdout + r.stderr
+    # but the duplication is not silently dropped: it is real evidence about
+    # the sample, independent of whether anyone asked for a verdict
+    assert "a.jsonl, b.jsonl" in r.stdout and "one run, not 2" in r.stdout
+
+
+def test_cli_report_only_still_surfaces_a_duplicate_session_in_json(tmp_path):
+    # Given the same setup, read through --json instead
+    original = TESTDATA / "cc-no-delegation.jsonl"
+    a = tmp_path / "a.jsonl"
+    b = tmp_path / "b.jsonl"
+    a.write_bytes(original.read_bytes())
+    b.write_bytes(original.read_bytes())
+    # When the CLI is run bare with --json and no expectations
+    r = run_cli(str(a), str(b), "--json")
+    data = json.loads(r.stdout)
+    # Then the exit-code/verdict semantics for report-only mode are unchanged
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert data["checked"] is False and data["passed"] is None
+    # but the duplicate-session evidence is still in the JSON gaps
+    assert any("one run, not 2" in gap for gap in data["gaps"]), data["gaps"]
+
+
 def test_two_genuinely_different_sessions_are_two_runs(tmp_path):
     # Given two transcripts recording two different sessions
     a = TESTDATA / "cc-no-delegation.jsonl"
@@ -1735,6 +1769,26 @@ def test_a_quoted_marker_is_still_an_anomaly_when_only_the_quotation_exists(tmp_
     # Then the "it is only quoted" finding is exactly the suspicion that remains
     assert not result.passed
     assert any("quoted" in a for a in result.anomalies)
+
+
+def test_a_fabricated_marker_is_not_vindicated_by_a_different_marker_of_the_same_kind(tmp_path):
+    # Given a run that really emits step=1 (unquoted, actor=main) but only
+    # ever quotes a step=2 for a different actor -- that step=2 never really
+    # happened, it was only shown inside a fence
+    fabricated_step2 = "BPTRACE step=2 out actor=ghost"
+    p = write_jsonl(tmp_path / "s.jsonl", [
+        assistant(text(START)),
+        assistant(text(STEP1)),
+        assistant(text("```\n" + fabricated_step2 + "\n```")),
+    ])
+    run = ct.parse_cc_run(p)
+    # When it is checked against the real step=1 only
+    result = ct.evaluate(run, [ct.parse_expectation("step=1:actor=main")], [])
+    # Then the fabricated step=2 is still flagged as an anomaly: a genuinely
+    # emitted step=1 does not vindicate a step=2 that was only ever quoted --
+    # "any marker of the same kind was emitted somewhere" is too broad a guard
+    assert any("quoted" in a and "step=2" in a and "ghost" in a
+               for a in result.anomalies), result.anomalies
 
 
 def test_a_quoted_malformed_line_is_just_noise(tmp_path):
