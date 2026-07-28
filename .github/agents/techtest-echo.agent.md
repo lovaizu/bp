@@ -16,12 +16,10 @@ target: vscode
 
 ## OUT
 
-On success, your entire output MUST be exactly these two lines, in this order, and nothing else:
+On success, your entire output MUST be exactly these two lines, in this order, and nothing else. Do not put the JSON object in a code block or any other markdown — output both lines as plain text:
 
-Line 1 — the JSON object:
-```json
+Line 1 — the JSON object, as a plain text line (no ```json code fence, no backticks):
 {"status": "ok", "echoed": "<the command's stdout>"}
-```
 Line 2 — the BPTRACE line (mandatory, not optional, not "surrounding text" — it is a required part of the output, not commentary):
 BPTRACE step=2 out actor=techtest-echo
 
