@@ -416,3 +416,15 @@ BPTRACE step=2 out actor=techtest-echo
 JSON オブジェクトの中身・BPTRACE の文字列は1文字も変えていない。変わったのは、両者を「1つの必須出力を構成する2行」として明示し、「no surrounding text」の意味を「この2行の前後・間に余計な文章を挟むな」という意味だと定義し直し、BPTRACE 行が任意／禁止対象ではなく必須の第2行であることを二重に（見出し語 "Line 2" とその直後の括弧書きの両方で）明示した点のみ。
 
 **Self-check（冷たい目で読み直した結果）**: 変更後の文面を、これらの指示を初めて受け取るモデルの立場で読み直した。「your entire output MUST be exactly these two lines」という冒頭の断定が、JSON 単独出力では要件を満たさないことを最初に確定させ、「Line 1」「Line 2」という明示的なラベルづけにより BPTRACE 行が JSON と同格の必須要素であることが構造的にも読み取れる。さらに Line 2 の直後の括弧書きで「mandatory, not optional, not "surrounding text"」と、まさに変更前に誤読されたであろうフレーズ（"surrounding text"）を名指しで否定し、末尾の "No surrounding text" means... の段落でその語の意味を明示的に再定義し「BPTRACE 行を省略してよいという意味ではない」と重ねて明記した。この文面のもとで「JSON だけ出せば十分」「BPTRACE 行は surrounding text だから出すべきではない」という読み方が成立する余地は見当たらない。一方で本Stepはあくまで**指示文の1変数修正**であり、実際に GHC のコールドセッションで再測定してマーカーが出るかどうかはユーザー操作待ちで未検証（本Stepの範囲外）。
+
+### 再測定（`/rn:up` 再開セッション、2026-07-28）— 上記仮説は反証、次の1変数へ
+
+**実行**: ユーザーが VS Code + GitHub Copilot Chat で `.github/prompts/techtest.prompt.md` をコールドセッションで3回実行し、画面出力をそのまま本セッションに貼付。
+
+**① 実transcriptの確認**（`check_transcript.py --platform ghc` で候補発見→明示パス指定で判定、3本とも `dafe47fe-...` / `11ed95bc-...` / `b40a84ac-...`）: `start`(1件)・`step=1:actor=main,origin=main`・`delegate:to=techtest-echo` は3/3で機械判定 PASS。ただし `step=2:actor=techtest-echo,origin=subagent:techtest-echo` は3/3とも `not found` で FAIL。3本の生JSONLを直接確認したところ、いずれもサブエージェントが `run_in_terminal`（`echo "step2: ..."`）を呼んだ直後、`assistant.turn_start` で記録が途切れており（最終応答メッセージ自体が記録されない、既知のGHC制約）、transcript 側だけでは「マーカーが出なかった」のか「出したが記録されなかった」のか判別できない。
+
+**② 画面出力（実際の判定根拠）**: ユーザーが貼った3回分の画面出力はいずれも「`Echo via techtest-echo subagent` → `Ran terminal command: echo "step2: ..."` → `` OUT: `{"status": "ok", "echoed": "step2: ..."}` ``」で終わっており、3回とも `BPTRACE step=2 out actor=techtest-echo` 行が一切現れない。ユーザーに確認したところ、このカードは Copilot Chat 上で**既に全展開表示されており、これ以上展開しても追加のテキストは出てこない**（UI がテキストを畳んで隠しているのではない）ことを確認した。したがって、これは記録漏れではなく、モデルの実際の出力そのものに BPTRACE 行が無いという実出力失敗であると判断できる。
+
+**結論**: 前回の1変数修正（`4b5e81f`、"no surrounding text" の誤読対策）は**反証された** — 文言をこれ以上強めても効果がないと考えられる水準まで明示済みだったにもかかわらず、3/3で同じ欠落が再現した。
+
+**次の1変数仮説（未検証）**: OUT 節の JSON 部分が ` ```json ... ``` ` というフェンス付きコードブロックで指定されている点を疑う。一部のツール呼び出し/エージェント実行ハーネスは、モデルがフェンス付きコードブロックを閉じた時点をその応答の完了点とみなし、以降のプレーンテキスト行の生成を打ち切ることがある。CC 側は同一バイトの指示文（フェンス付き）で3/3成功しているため、フェンス自体が万能の原因ではないが、GHC の `runSubagent`（ネストしたサブエージェント実行）特有の完了判定がこれに反応している可能性を排除できない。`.github/agents/techtest-echo.agent.md` の OUT 節・成功系のみを変更し、JSON 部分のコードフェンスを外してプレーンテキスト行に変更した（JSON のスキーマ・BPTRACE の文字列自体・エラー系・Procedure・IN・frontmatter は無変更）。`.claude/agents/techtest-echo.md`（CC版）・`.github/prompts/techtest.prompt.md`・`scripts/check_transcript.py` は無変更。再測定はユーザー操作のコールドセッション待ち（本エントリ時点では未検証）。
