@@ -560,11 +560,43 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
     innermost open frame's origin, until a `tool.execution_complete` carrying
     the same `toolCallId` pops it again. A span still open at end of file is
     an anomaly, not a silent guess about where it would have closed.
+
+    Two anomalies in that scheme get their own handling rather than being
+    silently absorbed:
+
+    * Out-of-order completion. A `tool.execution_complete` can carry a
+      `toolCallId` that matches a frame *below* the top of the stack -- an
+      outer span reporting done while something nested inside it is still
+      open. That can only mean the outer span (and, transitively, whatever
+      is nested inside it) is over, even though the inner span's own
+      completion never separately arrived, or arrives later and matches
+      nothing by then. The simplest defensible rule: pop the matched frame
+      *and* everything still stacked above it, and warn identifying which
+      id closed out of order and how many frames that took with it. The
+      alternative -- ignoring a completion that does not match the top,
+      as earlier code did -- corrupts every subsequent origin for the rest
+      of the file with no diagnostic at all, which is worse than a rule
+      that is merely a documented simplification.
+
+    * `toolCallId` reuse. GHC does not promise a `toolCallId` is unique for
+      all time, only that it identifies one call while that call is open.
+      Once a call's `tool.execution_complete` has been seen, that id is
+      "closed"; a later sighting of the *same* id (in `toolRequests[]` or a
+      fresh `tool.execution_start`) is therefore a new, unrelated call
+      reusing the id, not a duplicate announcement of the old one. Treating
+      it as "already seen, skip" -- what the dedup-by-id logic did before --
+      silently drops the entire second call (including a delegation, with
+      no warning and no `delegate` event). Instead: once an id is closed,
+      the next sighting of it is recognised as a distinct event (its own
+      Event, its own possible origin-stack push) and a warning is recorded
+      naming the collision, so it is visible in anomalies even though it is
+      resolved automatically rather than left as a gap.
     """
     path = Path(path)
     events: list = []
     stack: list = [(None, MAIN)]  # (toolCallId or None, origin)
     calls: dict = {}  # toolCallId -> the Event already emitted for it
+    closed_ids: set = set()  # toolCallIds whose tool.execution_complete has been seen
 
     for line_no, entry in _read_jsonl(path, warnings):
         if not isinstance(entry, dict):
@@ -592,9 +624,22 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
                     if not isinstance(req, dict):
                         continue
                     tool_call_id = req.get("toolCallId") or ""
-                    if not tool_call_id or tool_call_id in calls:
+                    if not tool_call_id:
+                        warnings.append(
+                            f"{path.name}: line {line_no}: toolRequests[] entry has no "
+                            f"toolCallId, so it cannot be scoped or deduped; skipped")
                         continue
+                    prior = calls.get(tool_call_id)
+                    if prior is not None and tool_call_id not in closed_ids:
+                        continue  # duplicate announcement of the same still-open call
                     name = req.get("name") or ""
+                    if prior is not None:
+                        warnings.append(
+                            f"{path.name}: line {line_no}: toolCallId {tool_call_id} "
+                            f"reused for a new call ({name or '?'}) after its earlier "
+                            f"call ({prior.name or '?'}) already completed; treated as "
+                            f"a distinct event, not a duplicate")
+                        closed_ids.discard(tool_call_id)
                     arguments = (req.get("arguments")
                                 if isinstance(req.get("arguments"), dict) else {})
                     kind, detail = _ghc_tool_event(name, arguments)
@@ -605,7 +650,16 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
 
         elif etype == "tool.execution_start":
             tool_call_id = data.get("toolCallId") or ""
-            event = calls.get(tool_call_id) if tool_call_id else None
+            prior = calls.get(tool_call_id) if tool_call_id else None
+            reused = bool(tool_call_id) and prior is not None and tool_call_id in closed_ids
+            if reused:
+                warnings.append(
+                    f"{path.name}: line {line_no}: toolCallId {tool_call_id} reused for "
+                    f"a new tool.execution_start after its earlier call "
+                    f"({prior.name or '?'}) already completed; treated as a distinct "
+                    f"event, not a duplicate")
+                closed_ids.discard(tool_call_id)
+            event = None if reused else prior
             if event is None:
                 name = data.get("toolName") or ""
                 arguments = (data.get("arguments")
@@ -632,8 +686,24 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
 
         elif etype == "tool.execution_complete":
             tool_call_id = data.get("toolCallId") or ""
-            if tool_call_id and stack[-1][0] == tool_call_id:
-                stack.pop()
+            if tool_call_id:
+                closed_ids.add(tool_call_id)
+                if stack[-1][0] == tool_call_id:
+                    stack.pop()
+                else:
+                    match_idx = None
+                    for i in range(len(stack) - 1, 0, -1):
+                        if stack[i][0] == tool_call_id:
+                            match_idx = i
+                            break
+                    if match_idx is not None:
+                        popped = [stack[i][1] for i in range(match_idx, len(stack))]
+                        del stack[match_idx:]
+                        warnings.append(
+                            f"{path.name}: line {line_no}: tool.execution_complete for "
+                            f"toolCallId={tool_call_id} closed out of order (it was not "
+                            f"the innermost open span); popped {len(popped)} frame(s): "
+                            f"{', '.join(popped)}")
 
     if len(stack) > 1:
         warnings.append(

@@ -203,3 +203,40 @@ a55fb40d : PASS
 - GHC の `runSubagent` 引数のフィールド名（本実装では `name`/`prompt` を仮定）は設計ドキュメントに明記がなく、実 GHC の挙動が異なれば `_ghc_tool_event` の1関数を直すだけで追従できる設計にしてある
 - GHC の「thinking相当ブロック」の有無は設計ドキュメントに記載がないため実装・テストとも対象外（CC の `thinking` ブロック除外と対称的な仕組みは持たない）
 - ツール stdout の分割ファイル（`content.txt`）読み込みは未実装。CC 側も `tool_result` の内容をイベント生成に使わない（`_cc_scan` は tool_use 側のみを見る）のと対称的に、GHC も `tool.execution_start`/`toolRequests[]` の引数のみでイベントを作るため、この分割ファイルは Event ストリームの生成に不要と判断した（読む必要のある対象がそもそも無い）
+
+### GHC変換・チェックスクリプト拡張: レビュー指摘の修正（fix round 1）
+
+実装担当エージェントとして、コミット `9d197b3` の GHC 拡張（`_ghc_scan` 他）に対する QA/Craft/Verification 独立レビューが収束して確認した2件の Critical 指摘と1件の Craft 指摘を修正した自己申告。QA/Craft/Verification の Overall Verdict は付けない（コーディネーターの担当）。TDD で、各指摘ごとに先に失敗するテストを書いて再現を確認してから実装を直した。
+
+**変更ファイル**: `scripts/check_transcript.py`（`_ghc_scan` のみ）、`scripts/test_check_transcript.py`（GHC セクションに追加・既存1件を更新。新規 testdata ファイルは追加していない）。CC 側のコード・テスト・`.rn/blackpink-setlist-planner/steering.md` は無変更。
+
+**Finding 1（Critical, out-of-order `tool.execution_complete`）**
+
+- Before: `tool.execution_complete` は `stack[-1][0] == tool_call_id`（スタック最上段とだけ一致）の時しか pop しなかった。outer→inner の順で開いた区間に対し outer 側の completion が inner より先に届くと、`tool_call_id`（outer の id）はスタック最上段（inner の id）と一致しないため無条件で無視され、完全に沈黙したまま以降の全イベントの origin 解決が壊れる。EOF 時の「span never closed」警告は出るが、これは「completion が一度も届かなかった」場合の警告であり、実際には届いていて握り潰されただけなので誤解を招く診断になっていた。
+- After: `tool_call_id` がスタックのどこかにマッチしたら（`None` 用の base フレームを除く）、それが最上段でなくても「マッチしたフレームとその上に積まれている全フレーム」を pop し、`"{path.name}: line {line_no}: tool.execution_complete for toolCallId={tool_call_id} closed out of order (it was not the innermost open span); popped {N} frame(s): {origins...}"` という警告を必ず記録する（黙って直すのでも黙って無視するのでもない）。採用したルールは指示書が挙げた「最も単純に正当化できるもの」＝「outer が閉じたなら、そこにネストしていた inner も論理的には終わっている」。
+- Pinning test: `test_ghc_out_of_order_completion_closes_the_matched_frame_and_everything_above_it`（outer→inner を開き、outer の completion を inner より先に届け、`bash_calls` の origin 系列が `["subagent:inner-agent", "main"]` になること・警告文中の `toolCallId=tc-outer` / `popped 2 frame(s)` / 両エージェント名を厳密 assert・EOF での「never closed」警告が別途は出ないことまで固定）
+
+**Finding 2（Critical, `toolCallId` の使い回しで2件目の呼び出しが消える）**
+
+- Before: `calls` 辞書と dedup ロジックは「1つの `toolCallId` は未来永劫1つの呼び出しを指す」と仮定していた。`runInTerminal` が `reused-id` で正常完了した後、無関係な `runSubagent` が同じ `reused-id` を再利用すると、`toolRequests[]` ループは `tool_call_id in calls` で即 `continue`（新規呼び出しとして扱われない）、`tool.execution_start` 側も `calls.get(tool_call_id)` が古い bash イベントを返すため `event.kind == DELEGATE` の判定を素通りしてスタックに何も push しない。結果、delegate イベント・origin push とも一切発生せず、警告も0件のまま委譲まるごと消える。
+- After: `tool.execution_complete` を見た `toolCallId` を `closed_ids` に記録するようにし、`toolRequests[]` ループと `tool.execution_start` の両方で「既存エントリがあるが、そのidが既に closed_ids に入っている」場合を「同一呼び出しの重複通知」ではなく「id を使い回した別の呼び出し」として扱う: 新規イベントを作り直し、`closed_ids` から外し、`"toolCallId {id} reused for a new call/tool.execution_start ... after its earlier call ({old name}) already completed; treated as a distinct event, not a duplicate"` という警告を必ず記録する。曖昧な自動判定を避けて黙って無視する道もあったが、id が再利用される具体例（GHC 側で一度完了した呼び出しの id を後で使い回す）は「別呼び出しとして扱い直す」以外に自然な解釈がないため、自動解決＋警告を選んだ（docstring に理由を明記）。
+- Pinning tests: `test_ghc_a_reused_toolCallId_across_two_unrelated_calls_does_not_erase_the_second`（`toolRequests[]` 経由の再利用で `run.delegations` が1件・`to=="second-agent"`・該当 step marker の origin が `subagent:second-agent`・警告に `reused-id` と `reused` が含まれることを確認）、`test_ghc_a_reused_toolCallId_is_recognised_even_via_execution_start_alone`（`toolRequests[]` の通知なしに `tool.execution_start` だけで id が再利用されるケースで同じ結果になることを確認、`tool.execution_start` 側の reuse 分岐を直接カバー）
+
+**Finding 3（Craft, `toolRequests[]` の `toolCallId` 欠落が無警告で skip）**
+
+- Before: `toolCallId` を持たない `toolRequests[]` エントリは `continue` のみで警告なし。同じ関数内の他3種の欠落ケース（`runSubagent` に `toolCallId` なし／委譲先名なし／EOF での区間未クローズ）はすべて警告するのに、この1ケースだけ無言だった。
+- After: `"{path.name}: line {line_no}: toolRequests[] entry has no toolCallId, so it cannot be scoped or deduped; skipped"` を追加。既存の `test_ghc_a_tool_request_without_a_tool_call_id_is_skipped` を「イベントが生成されないこと」に加えて「警告が記録されること」も assert するよう更新（無警告 skip の固定をやめた）。
+
+**テストカバレッジの穴埋め（安価なもののみ）**
+
+- ネスト委譲の LIFO 正常系: `test_ghc_nested_subagent_spans_are_attributed_layer_by_layer`（CC の `test_nested_subagent_events_are_spliced_recursively` の GHC 版）。outer を開いた状態でさらに inner を開き、inner→outer の正しい順で閉じるケースで、`bash_calls` の origin が `["subagent:outer-agent", "subagent:inner-agent", "subagent:outer-agent", "main"]` と層ごとに正しく戻ることを固定し、`run.warnings == []`（異常なし）も確認
+- `PLATFORMS` レジストリ: `test_platforms_registry_holds_exactly_cc_and_ghc`（`set(ct.PLATFORMS) == {"cc", "ghc"}`）
+- CLI `--platform` の不正値: `test_cli_rejects_an_unknown_platform_value`（`--platform not-a-real-platform` が `returncode == 2` かつ `stderr` に `"invalid choice"` を含むことを確認。argparse の `choices=sorted(PLATFORMS)` がそのまま拒否することのCLIレベル確認）
+
+**再検証結果**:
+- `python3 -m pytest scripts/test_check_transcript.py -q` → **267 passed, 1 skipped**（skip は環境依存の opt-in `test_live_project_dir_can_be_scanned_without_crashing` のみ、fix round 前と同じ理由・同じ1件。既存テストは1件も壊れていない）
+- `rm -f .coverage .coverage.* scripts/.coverage.*; COVERAGE_PROCESS_START=$PWD/.coveragerc python3 -m coverage run -m pytest scripts/test_check_transcript.py; python3 -m coverage combine . scripts; python3 -m coverage report -m` → `scripts/check_transcript.py`: **751 stmts / 0 miss（行 100%）、330 branch / 0 partial（分岐 100%）**。fix round 前（727 stmts / 316 branch、100%）から増えた分もすべてテストで踏まれている
+
+**明示しておくべき未検証事項**（据え置き、今回のラウンドで変わっていない）:
+- 実 GHC transcript による検証は今回も一切行っていない。上記の修正・テストはすべて手組み合成フィクスチャに対するもの
+- Finding 1/2 の「単純に正当化できるルール」（outer 閉じ = inner も閉じる／id 再利用 = 別呼び出し）はいずれも複数の妥当な解釈がありうる中の一つを選んだものであり、実 GHC の挙動がこれと異なる可能性は排除できない。ただし黙って無視する・黙って握り潰すという旧挙動よりは診断可能な状態になっている
