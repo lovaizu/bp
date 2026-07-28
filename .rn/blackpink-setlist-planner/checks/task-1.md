@@ -380,3 +380,39 @@ a55fb40d : PASS
 - Craft expert: OK（軽微な nit 1件残存、正しさに影響なし）
 - Verification expert: OK（1件の低リスク複合ギャップを既知の限界として明示的に受容）
 - Ready to check off: **Yes — ただしコード実装側のみ**。task #1 のこの Step には GHC 側でのコールドセッション3回実測がまだ含まれており、それはユーザー操作が必要（`steering.md` Rules）なため未完了。`steering.md` 側は「コード実装完了・実測待ち」として更新し、Step のチェックボックス自体はまだ付けない
+
+### techtest-echo（GHC）OUT契約の文言修正 — 1変数再測定（BPTRACE step=2マーカー欠落 0/3への対応）（2026-07-28）
+
+**背景**: ユーザーがコールドセッションで `/techtest`（`.github/prompts/techtest.prompt.md` 経由、Step2 は `techtest-echo` サブエージェントへ委譲）を実際に3回実行した。委譲そのものは `check_transcript.py` の機械判定で3/3成立していることを別途確認済み（fix round 4 で GHC パーサのフィールド名バグを実データで直した後）。ところが、ユーザー自身の Copilot Chat 画面キャプチャを見ると、3回とも `techtest-echo` は JSON ステータスオブジェクトまでは出力するが、その後に続くはずの `BPTRACE step=2 out actor=techtest-echo` 行が画面上に一度も現れていない（0/3）。CC 側の同名サブエージェント（`.claude/agents/techtest-echo.md`、指示文はバイト同一）は同じ指示で3/3 マーカーを出しており、これは GHC 固有のモデルの instruction-following ギャップである。
+
+**変更範囲（1変数のみ）**: `.github/agents/techtest-echo.agent.md` の `## OUT` セクションの成功系（success-case）の説明文のみを変更。JSON オブジェクトのスキーマ・内容、`BPTRACE step=2 out actor=techtest-echo` の文字列そのもの、エラー系の OUT ブロック、`## Procedure`・`## IN`・frontmatter はすべて無変更。`.claude/agents/techtest-echo.md`（CC版、比較対照として維持する必要がある）・`.github/prompts/techtest.prompt.md`・`.claude/commands/techtest.md`・`scripts/check_transcript.py` は一切触れていない。
+
+**根拠仮説**: 変更前の文言「output exactly this JSON object (no surrounding text), then the BPTRACE line」は、"no surrounding text" が「JSON オブジェクトの前後に一切何も出すな」という禁止規則として読める一方で、直後の「then the BPTRACE line」がその禁止規則の**例外**なのか、それとも JSON に続く**別の必須行**なのかが構文上あいまいだった。モデルが「no surrounding text」を強い禁止として優先的に読み、BPTRACE 行を「禁止されている surrounding text の一種」と誤って分類すれば、JSON だけを出して停止するという、実際に観測された挙動と整合する読み方が成立してしまう。CC 側で同一文言が3/3成功している以上、コードや委譲経路の問題ではなく、この一文の解釈が GHC のモデルにとってのみ引っかかったと考えるのが、指示書の「変数は1つだけ」の原則に最も忠実な説明である。
+
+**Before**（`.github/agents/techtest-echo.agent.md` `## OUT` 成功系、変更前）:
+````
+On success, output exactly this JSON object (no surrounding text), then the BPTRACE line:
+
+```json
+{"status": "ok", "echoed": "<the command's stdout>"}
+```
+BPTRACE step=2 out actor=techtest-echo
+````
+
+**After**（変更後）:
+````
+On success, your entire output MUST be exactly these two lines, in this order, and nothing else:
+
+Line 1 — the JSON object:
+```json
+{"status": "ok", "echoed": "<the command's stdout>"}
+```
+Line 2 — the BPTRACE line (mandatory, not optional, not "surrounding text" — it is a required part of the output, not commentary):
+BPTRACE step=2 out actor=techtest-echo
+
+"No surrounding text" means: no extra prose, commentary, or markdown before, between, or after these two required lines. It does NOT mean the BPTRACE line may be omitted — omitting it is a failure to complete this step.
+````
+
+JSON オブジェクトの中身・BPTRACE の文字列は1文字も変えていない。変わったのは、両者を「1つの必須出力を構成する2行」として明示し、「no surrounding text」の意味を「この2行の前後・間に余計な文章を挟むな」という意味だと定義し直し、BPTRACE 行が任意／禁止対象ではなく必須の第2行であることを二重に（見出し語 "Line 2" とその直後の括弧書きの両方で）明示した点のみ。
+
+**Self-check（冷たい目で読み直した結果）**: 変更後の文面を、これらの指示を初めて受け取るモデルの立場で読み直した。「your entire output MUST be exactly these two lines」という冒頭の断定が、JSON 単独出力では要件を満たさないことを最初に確定させ、「Line 1」「Line 2」という明示的なラベルづけにより BPTRACE 行が JSON と同格の必須要素であることが構造的にも読み取れる。さらに Line 2 の直後の括弧書きで「mandatory, not optional, not "surrounding text"」と、まさに変更前に誤読されたであろうフレーズ（"surrounding text"）を名指しで否定し、末尾の "No surrounding text" means... の段落でその語の意味を明示的に再定義し「BPTRACE 行を省略してよいという意味ではない」と重ねて明記した。この文面のもとで「JSON だけ出せば十分」「BPTRACE 行は surrounding text だから出すべきではない」という読み方が成立する余地は見当たらない。一方で本Stepはあくまで**指示文の1変数修正**であり、実際に GHC のコールドセッションで再測定してマーカーが出るかどうかはユーザー操作待ちで未検証（本Stepの範囲外）。
