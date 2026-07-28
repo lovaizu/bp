@@ -91,7 +91,7 @@ Coverage of this script, including the CLI tests that run it as a subprocess:
 
   COVERAGE_PROCESS_START=$PWD/.coveragerc python -m coverage run -m pytest \
       scripts/test_check_transcript.py
-  python -m coverage combine && python -m coverage report -m
+  python -m coverage combine . scripts && python -m coverage report -m
 """
 
 import argparse
