@@ -1,0 +1,12 @@
+{"type": "session.start", "data": {"sessionId": "ghc-fixture-nodelegation-0001"}}
+{"type": "assistant.turn_start", "data": {}}
+{"type": "assistant.message", "data": {"content": "BPTRACE start theme=\"neon night\" wf=techtest.md", "toolRequests": []}}
+{"type": "assistant.message", "data": {"content": "Running step 1.", "toolRequests": [{"name": "runInTerminal", "toolCallId": "call-1", "arguments": "{\"command\": \"echo \\\"step1: neon night\\\"\"}"}]}}
+{"type": "tool.execution_start", "data": {"toolName": "runInTerminal", "toolCallId": "call-1", "arguments": {"command": "echo \"step1: neon night\""}}}
+{"type": "tool.execution_complete", "data": {"toolCallId": "call-1", "success": true}}
+{"type": "assistant.message", "data": {"content": "BPTRACE step=1 out actor=main", "toolRequests": []}}
+{"type": "assistant.message", "data": {"content": "Running step 2 myself, no delegation.", "toolRequests": [{"name": "runInTerminal", "toolCallId": "call-2", "arguments": "{\"command\": \"echo \\\"step2: neon night\\\"\"}"}]}}
+{"type": "tool.execution_start", "data": {"toolName": "runInTerminal", "toolCallId": "call-2", "arguments": {"command": "echo \"step2: neon night\""}}}
+{"type": "tool.execution_complete", "data": {"toolCallId": "call-2", "success": true}}
+{"type": "assistant.message", "data": {"content": "BPTRACE step=2 out actor=main", "toolRequests": []}}
+{"type": "assistant.turn_end", "data": {}}

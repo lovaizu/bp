@@ -1,0 +1,30 @@
+# Coverage for scripts/check_transcript.py.
+#
+# A large part of the suite drives the checker as a real subprocess (run_cli and
+# the exit-code tests), because the exit-code contract is part of what is being
+# tested. Measured naively those runs are invisible and the report reads 79%.
+# Three things make them count: parallel data files, one per process;
+# COVERAGE_PROCESS_START, which coverage's .pth hook reads at interpreter
+# start-up in every child; and an `include` pattern rather than `source`, since
+# the children do not all share this working directory.
+#
+# From the repository root (COVERAGE_PROCESS_START must be an absolute path):
+#
+#   rm -f .coverage .coverage.* scripts/.coverage.*
+#   COVERAGE_PROCESS_START=$PWD/.coveragerc \
+#       python -m coverage run -m pytest scripts/test_check_transcript.py
+#   python -m coverage combine . scripts
+#   python -m coverage report -m
+#
+# `combine` is given both directories because a couple of tests launch the
+# interpreter with cwd=scripts/, so their data files land there.
+
+[run]
+branch = True
+parallel = True
+include = */scripts/check_transcript.py
+data_file = .coverage
+
+[report]
+show_missing = True
+skip_covered = False
