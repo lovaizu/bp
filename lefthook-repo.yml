@@ -1,6 +1,11 @@
 # The lefthook settings of this repository, which lefthook.yml extends.
 pre-commit:
   jobs:
-    # main holds no Japanese text.
+    # The design doc holds Japanese, so the Japanese check reads it, and
+    # the English check leaves it out.
+    - name: english
+      exclude:
+        - "docs/cross-platform-agent-design.md"
     - name: japanese
-      skip: true
+      glob:
+        - "docs/cross-platform-agent-design.md"
