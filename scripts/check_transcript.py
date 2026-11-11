@@ -144,7 +144,8 @@ MARKER_START_RE = re.compile(
 MARKER_STEP_RE = re.compile(
     rf"^BPTRACE\s+step=(?P<step>[0-9]+)\s+out\s+actor=(?P<actor>{_ACTOR})$")
 # A near miss is a line that tried to write a marker, not one that mentions the
-# token. "BPTRACEマーカーは..." and "`BPTRACE` について" are prose, not failures.
+# token. A sentence that starts with "BPTRACEマーカーは" or "`BPTRACE` について"
+# is prose, not a failure.
 _NEAR_MISS_RE = re.compile(r"BPTRACE\s+(?:start|step)\b")
 _DECORATION = " \t>*_`#-+"
 
@@ -262,7 +263,7 @@ class Event:
     """One observable thing that happened, in execution order."""
 
     seq: int
-    kind: str  # one of the kind constants above
+    kind: str  # one of the kind constants at the top of this module
     origin: str  # "main" or "subagent:<agent type>"
     source: str  # file the event was read from
     line: int
@@ -566,7 +567,7 @@ def _ghc_toolrequest_arguments(raw, path, line_no, warnings):
     call's own `tool.execution_start` (same toolCallId) carries `arguments`
     as a real dict (confirmed against real cold-session data, not assumed --
     see checks/task-1.md fix round 4). Parsing the string here is what lets
-    `_ghc_same_call` recognise the two announcements as the same call: left
+    `_ghc_same_call` recognize the two announcements as the same call: left
     unparsed, it silently became `{}`, which no longer equalled the real
     dict from `tool.execution_start` and produced a spurious "collides with
     a still-open call" / "toolCallId reused" warning plus a duplicate event
@@ -579,8 +580,8 @@ def _ghc_toolrequest_arguments(raw, path, line_no, warnings):
     every other unexpected shape here, but a string that fails to parse as a
     JSON object is not swallowed silently: a warning names the anomaly so it
     stays visible instead of quietly losing dedup/target-resolution
-    fidelity. A missing/non-string/non-dict value (e.g. absent, a list, a
-    number) is left as a silent `{}`, matching the pre-existing fallback for
+    fidelity. A missing/non-string/non-dict value (for example absent, a list,
+    a number) is left as a silent `{}`, matching the pre-existing fallback for
     those shapes.
     """
     if isinstance(raw, dict):
@@ -606,16 +607,16 @@ def _ghc_same_call(prior, name, arguments):
     GHC's own double-announcement quirk (`toolRequests[]` then its own
     `tool.execution_start`) always describes the same tool and the same
     arguments for one real call, so that identity -- not just the id -- is
-    what tells "the legitimate second announcement of the still-open call
-    with this id" apart from "a different call colliding with a still-open
-    id", which should never legitimately happen.
+    what tells two cases apart: "the legitimate second announcement of the
+    still-open call with this id" and "a different call colliding with a
+    still-open id." The second case should never legitimately happen.
 
     Comparison is against the tool's real `arguments` dict (carried on the
     Event as `call_args`), not the narrower `detail` dict `_ghc_tool_event`
     derives from it. `detail` only carries a hand-picked field or two for
     `runSubagent`/`runInTerminal` and is unconditionally `{}` for every other
-    GHC tool name (the generic TOOL kind: `readFile`, `writeFile`,
-    `semanticSearch`, ...), so comparing `detail` alone cannot tell two
+    GHC tool name (the generic TOOL kind, such as `readFile`, `writeFile`
+    and `semanticSearch`), so comparing `detail` alone cannot tell two
     genuinely different TOOL-kind calls apart -- it would silently merge them
     with zero diagnostic. Comparing the real arguments makes the distinction
     meaningful for every GHC tool name, special-cased or not.
@@ -630,7 +631,7 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
     `assistant.message` that decided to make it, as an entry of
     `data.toolRequests[]`, and again as its own `type=tool.execution_start` --
     so the two are collapsed to one Event, keyed on `toolCallId`: whichever is
-    seen first creates the Event, the second is recognised as the same call
+    seen first creates the Event, the second is recognized as the same call
     and produces nothing.
 
     A `runSubagent` call's `tool.execution_start` pushes an origin frame
@@ -650,7 +651,7 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
       is nested inside it) is over, even though the inner span's own
       completion never separately arrived, or arrives later and matches
       nothing by then. The simplest defensible rule: pop the matched frame
-      *and* everything still stacked above it, and warn identifying which
+      *and* every frame still stacked on top of it, and warn identifying which
       id closed out of order and how many frames that took with it. The
       alternative -- ignoring a completion that does not match the top,
       as earlier code did -- corrupts every subsequent origin for the rest
@@ -670,15 +671,15 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
           Produces nothing new.
         - Id already closed (its `tool.execution_complete` was seen since
           it was last opened): a new, unrelated call has reused the id
-          after the earlier one finished. Recognised as a distinct event
+          after the earlier one finished. Recognized as a distinct event
           (its own Event, its own possible origin-stack push); a warning
           names the collision.
         - Different tool/arguments while the id is still *open*: this
           should never legitimately happen -- it means two unrelated calls
           are colliding on one id before the first ever completed. Earlier
-          code conflated this with the first case above (same id, not yet
-          closed) and treated it as "just the duplicate announcement",
-          which silently dropped the second call's own event and, if the
+          code conflated this with the first case of this list (same id, not
+          yet closed) and treated it as "just the duplicate announcement."
+          That silently dropped the second call's own event and, if the
           stale first call was a `runSubagent`, pushed its cached Event's
           origin frame onto the stack a second time. Now it is handled
           exactly like reuse-after-close: a distinct event, a warning
@@ -686,7 +687,7 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
           the stack from when it legitimately opened) is left untouched --
           not duplicated, not merged with the new call.
 
-      Either way, once recognised as reuse/collision the id's `calls[]`
+      Either way, once recognized as reuse/collision the id's `calls[]`
       entry is replaced by the new sighting, so that call's *own* later
       duplicate announcement (if GHC sends one) collapses against itself,
       not against the stale call it displaced.
@@ -701,8 +702,8 @@ def _ghc_scan(path, warnings, session_ids=None) -> list:
       stray or duplicate and is reported as such rather than silently
       accepted as a no-op success. This matters most right after a
       legitimate reuse: an extra, unmatched completion for the id at that
-      point used to be indistinguishable from "nothing to do", when it
-      should be surfaced as an anomaly every time.
+      point used to look the same as "nothing to do." It should surface as
+      an anomaly every time.
     """
     path = Path(path)
     events: list = []
@@ -916,11 +917,11 @@ def _ghc_workspace_dir(user_dir, repo_path):
     """Return the workspaceStorage/<wsHash> dir whose workspace.json names this
     repo, or None if `user_dir` holds no such match.
 
-    GHC's `folder` field is a URI (`vscode-remote://wsl%2B<distro>/<path>`
-    over WSL, a plain path otherwise). This checks only that it *ends in* the
-    repo's own resolved path rather than parsing the URI scheme, since the
-    scheme varies with how VS Code is connected but the trailing path does
-    not.
+    GHC's `folder` field is a plain path, or over WSL a URI: the scheme
+    `vscode-remote://`, then `wsl+<distro>` with its `+` percent-encoded,
+    then `/<path>`. This checks only that it *ends in* the repo's own
+    resolved path rather than parsing the URI scheme, since the scheme varies
+    with how VS Code is connected but the trailing path does not.
     """
     repo_path = str(Path(repo_path).resolve())
     storage = Path(user_dir) / "workspaceStorage"
@@ -1019,8 +1020,8 @@ class Discovery:
         """Runs in the sample that are really the same recorded session.
 
         Distinct files can still be one run: a copy, a re-export, the same
-        session under two names. Counting them separately is how a sample of
-        one is reported as "3 of 3".
+        session under two names. Counting them separately would report
+        "3 of 3" for a sample of one.
         """
         by_session: dict[str, list[str]] = {}
         for run in self.runs:
@@ -1070,10 +1071,10 @@ def load_runs(paths, parse: Callable[[Path], Run]) -> Discovery:
     """Parse exactly the transcripts the caller named. Nothing is filtered out.
 
     The one thing that is checked first is that they are N different files:
-    `a.jsonl ./a.jsonl /abs/a.jsonl` is one run spelled three ways, and letting
-    it report "3/3 run(s) PASS" would satisfy a "3 runs out of 3" criterion with
-    a single run. Sameness is decided on the resolved path, so symlinks and
-    `..` cannot spell a repeat past it either.
+    `a.jsonl ./a.jsonl /abs/a.jsonl` is one run spelled three ways. If the
+    check counted the three spellings as 3 of 3 runs that pass, a single run
+    would satisfy a criterion of 3 runs out of 3. Sameness is decided on the
+    resolved path, so symlinks and `..` cannot spell a repeat past it either.
     """
     seen: dict[Path, str] = {}
     for path in paths:
@@ -1271,7 +1272,7 @@ def _nearby(run: Run, expectation: Expectation) -> str:
 
 
 def _marker_identity(kind: str, detail: dict[str, str]):
-    """What makes two markers "the same one", for judging a quotation against
+    """What makes two markers the same one, for judging a quotation against
     what was genuinely emitted.
 
     A quoted step=2 is not vindicated by step=1 having really happened -- it
@@ -1303,9 +1304,9 @@ def evaluate(run: Run, ordered, counted, allow_anomalies: bool = False) -> Resul
     for marker in run.malformed_markers:
         anomalies.append(f"malformed BPTRACE line at {marker.describe()}")
     # Quoting a marker is only suspicious when that exact marker was never
-    # really emitted: "here is the line I am about to print", followed by
-    # printing it, is what a well-behaved run looks like. Some *other* marker
-    # of the same kind having been emitted for real does not vindicate it --
+    # really emitted. A well-behaved run can quote the line that it's about
+    # to print, and then print it. Some *other* marker of the same kind
+    # having been emitted for real does not vindicate it --
     # a fabricated step=2 is still fabricated even if step=1 really happened.
     emitted_identities = {_marker_identity(MARKER_START, m.detail) for m in run.start_markers}
     emitted_identities |= {_marker_identity(MARKER_STEP, m.detail) for m in run.step_markers}
@@ -1421,7 +1422,7 @@ def print_report(result: Result, out, verbose: bool = False) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# CLI
+# Command line
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1523,9 +1524,9 @@ def _run(args) -> int:
     passed = all(r.passed for r in results) and not (checked and gaps)
 
     if args.json:
-        # No expectation, no verdict: `true` here would read as "it was checked
-        # and it was fine", which is exactly the mistake a forgotten --expect
-        # makes. The exit code stays 0 -- reporting is a legitimate use.
+        # No expectation, no verdict: `true` here would read as a check that
+        # ran and found everything fine. A forgotten --expect makes exactly
+        # that mistake. The exit code stays 0 -- reporting is a legitimate use.
         json.dump({"passed": passed if checked else None,
                    "checked": checked, "requested": found.requested,
                    "missing": found.shortfall,
@@ -1567,7 +1568,7 @@ def main(argv=None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except BrokenPipeError:
-        _silence_stdout()  # `... | head` is not a failure of the check
+        _silence_stdout()  # a pipe into `head` is not a failure of the check
         return 0
     except Exception as exc:  # a crash must never be mistaken for a FAIL verdict
         print(f"internal error: {type(exc).__name__}: {exc}", file=sys.stderr)
