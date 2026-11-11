@@ -39,7 +39,8 @@ DATA_GHC_NO_DELEGATION = TESTDATA / "ghc-no-delegation.jsonl"
 DATA_GHC_DELEGATION = TESTDATA / "ghc-delegation.jsonl"
 
 # Opt-in only: point this at a live CC project dir to re-check against whatever
-# that machine happens to hold. Never a substitute for the fixtures above.
+# that machine happens to hold. Never a substitute for the hand-built fixtures
+# earlier in this file.
 LIVE_DIR = os.environ.get("BP_LIVE_CC_PROJECT_DIR")
 needs_live = pytest.mark.skipif(not LIVE_DIR, reason="BP_LIVE_CC_PROJECT_DIR not set")
 
@@ -140,7 +141,8 @@ def test_start_marker_is_extracted_from_assistant_text(tmp_path):
 
 
 def test_marker_inside_tool_result_is_ignored(tmp_path):
-    # Given markers that only appear in a tool_result (e.g. a Read of the WF file)
+    # Given markers that only appear in a tool_result (for example a Read of the
+    # WF file)
     p = write_jsonl(tmp_path / "s.jsonl", [
         assistant(tool_use("Read", "t1", file_path="techtest.md")),
         user_result("t1", f"  9\t{START}\n 10\t{STEP1}\n"),
@@ -381,7 +383,7 @@ def test_legacy_task_tool_name_counts_as_delegation(tmp_path):
     ])
     # When parsed
     run = ct.parse_cc_run(p)
-    # Then it is still recognised as a delegation
+    # Then it is still recognized as a delegation
     assert len(run.delegations) == 1
 
 
@@ -726,7 +728,8 @@ def test_a_check_unrelated_to_bptrace_is_judged_on_its_own_terms(tmp_path):
 def test_the_docstring_recipe_spells_out_the_start_count_itself():
     # Given the measurement recipe kept in the module docstring
     # When it is read
-    # Then it asks for the start-marker count explicitly, because evaluate() will not
+    # Then it asks for the start-marker count explicitly, because evaluate() has
+    # no built-in rule about start markers
     assert "--expect-count 'start=1'" in ct.__doc__
 
 
@@ -1119,7 +1122,7 @@ def test_project_dir_slug_collapses_dots_too():
     assert d.name == "-home-u-work-bp--claude-worktrees-wt"
 
 
-# --- CLI ----------------------------------------------------------------------
+# --- Command-line tool --------------------------------------------------------
 def run_cli(*args):
     return subprocess.run([sys.executable, str(SCRIPT), *args],
                           capture_output=True, text=True)
@@ -1128,7 +1131,7 @@ def run_cli(*args):
 def test_cli_reports_pass_with_exit_code_0(tmp_path):
     # Given a correct run
     p = happy_run(tmp_path)
-    # When the CLI is invoked with the techtest expectations
+    # When the command-line tool is invoked with the techtest expectations
     r = run_cli(str(p), "--expect", "start:wf=techtest.md",
                 "--expect-marker", "step=1:actor=main",
                 "--expect", "step=2:actor=techtest-echo",
@@ -1141,7 +1144,7 @@ def test_cli_reports_pass_with_exit_code_0(tmp_path):
 def test_cli_reports_fail_with_exit_code_1(tmp_path):
     # Given a run that never delegates
     p = write_jsonl(tmp_path / "s.jsonl", [assistant(text(START)), assistant(text(STEP1))])
-    # When the CLI expects a delegation
+    # When the command-line tool expects a delegation
     r = run_cli(str(p), "--expect-delegations", "1")
     # Then it exits 1 and prints FAIL
     assert r.returncode == 1
@@ -1150,7 +1153,7 @@ def test_cli_reports_fail_with_exit_code_1(tmp_path):
 
 def test_cli_exits_2_on_a_missing_file(tmp_path):
     # Given a path that does not exist
-    # When the CLI is invoked
+    # When the command-line tool is invoked
     r = run_cli(str(tmp_path / "nope.jsonl"))
     # Then it exits 2 with an error on stderr
     assert r.returncode == 2 and "nope.jsonl" in r.stderr
@@ -1160,7 +1163,7 @@ def test_cli_treats_a_non_object_meta_json_as_a_failing_anomaly_not_a_crash(tmp_
     # Given a .meta.json that used to raise AttributeError deep in the parser
     p = happy_run(tmp_path, session="s1")
     happy_meta(tmp_path).write_text('["x"]', encoding="utf-8")
-    # When the CLI runs with --json
+    # When the command-line tool runs with --json
     r = run_cli(str(p), "--json", "--expect", "start")
     # Then it is a FAIL (damaged evidence), not exit 2 and never a PASS
     assert r.returncode == 1, r.stdout + r.stderr
@@ -1176,7 +1179,8 @@ def test_cli_maps_an_internal_error_to_exit_2(tmp_path, monkeypatch):
     # When it runs
     r = subprocess.run([sys.executable, "-c", boom], capture_output=True, text=True,
                        cwd=str(SCRIPT.parent))
-    # Then the CLI reports an internal error and exits 2, not 1 (which means FAIL)
+    # Then the command-line tool reports an internal error and exits 2, not 1
+    # (which means FAIL)
     assert r.returncode == 2, r.stdout + r.stderr
     assert "internal error" in r.stderr
 
@@ -1310,7 +1314,7 @@ def test_cli_latest_fails_when_fewer_runs_than_requested(tmp_path):
 def test_cli_without_expectations_only_reports(tmp_path):
     # Given a run and no expectations
     p = happy_run(tmp_path)
-    # When the CLI is invoked bare
+    # When the command-line tool is invoked bare
     r = run_cli(str(p))
     # Then it exits 0 and prints the extracted facts without a verdict
     assert r.returncode == 0
@@ -1354,11 +1358,11 @@ def test_aliases_of_one_path_are_recognised_as_the_same_transcript(tmp_path):
 
 
 def test_cli_three_copies_of_one_path_cannot_report_three_of_three(tmp_path):
-    # Given the completion criterion "3 runs out of 3", and one run named 3 times
+    # Given the completion criterion of 3 runs out of 3, and one run named 3 times
     p = happy_run(tmp_path)
-    # When the CLI is asked to judge it
+    # When the command-line tool is asked to judge it
     r = run_cli(str(p), str(p), str(p), "--expect", "start")
-    # Then it refuses (exit 2) instead of printing "3/3 run(s) PASS -> PASS"
+    # Then it refuses (exit 2) instead of reporting that 3 of 3 runs pass
     assert r.returncode == 2, r.stdout + r.stderr
     assert "same transcript" in r.stderr
     assert "3/3" not in r.stdout
@@ -1386,7 +1390,8 @@ def test_cli_report_only_still_surfaces_a_duplicate_session_in_text(tmp_path):
     b = tmp_path / "b.jsonl"
     a.write_bytes(original.read_bytes())
     b.write_bytes(original.read_bytes())
-    # When the CLI is run bare, with no --expect/--expect-count/--expect-delegations
+    # When the command-line tool is run bare, with no
+    # --expect/--expect-count/--expect-delegations
     r = run_cli(str(a), str(b))
     # Then it still exits 0 (reporting is legitimate, no verdict was asked for)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -1402,7 +1407,7 @@ def test_cli_report_only_still_surfaces_a_duplicate_session_in_json(tmp_path):
     b = tmp_path / "b.jsonl"
     a.write_bytes(original.read_bytes())
     b.write_bytes(original.read_bytes())
-    # When the CLI is run bare with --json and no expectations
+    # When the command-line tool is run bare with --json and no expectations
     r = run_cli(str(a), str(b), "--json")
     data = json.loads(r.stdout)
     # Then the exit-code/verdict semantics for report-only mode are unchanged
@@ -1454,7 +1459,7 @@ def test_the_session_id_comes_from_the_transcript_itself():
 ])
 def test_cli_exits_2_on_bad_usage(args):
     # Given a command line that cannot be honoured
-    # When the CLI runs
+    # When the command-line tool runs
     r = run_cli(*args)
     # Then it exits 2 with an explanation
     assert r.returncode == 2 and r.stderr.startswith("error:")
@@ -1465,7 +1470,7 @@ def test_cli_reports_parse_warnings_and_marker_anomalies(tmp_path):
     p = tmp_path / "s.jsonl"
     p.write_text(json.dumps(assistant(text(START))) + "\n{bad\n"
                  + json.dumps(assistant(text("**" + START + "**"))) + "\n", encoding="utf-8")
-    # When the CLI runs
+    # When the command-line tool runs
     r = run_cli(str(p))
     # Then both anomalies appear in the report
     assert "malformed BPTRACE line" in r.stdout and "not valid JSON" in r.stdout
@@ -1501,7 +1506,7 @@ def test_cli_latest_reports_the_runs_it_selected(tmp_path):
 def test_the_event_dump_is_off_by_default(tmp_path):
     # Given a passing run
     p = happy_run(tmp_path)
-    # When the CLI reports it without --verbose
+    # When the command-line tool reports it without --verbose
     r = run_cli(str(p), "--expect", "start")
     # Then only the counts are printed, not every event
     assert "event order   : " in r.stdout
@@ -1527,7 +1532,7 @@ def test_a_failing_run_prints_its_events_without_verbose(tmp_path):
 
 
 def test_the_help_text_carries_no_project_specific_example():
-    # Given the CLI help
+    # Given the help of the command-line tool
     r = run_cli("--help")
     # When it is read
     # Then no BLACKPINK-specific resource leaks into the generic option help
@@ -1799,8 +1804,8 @@ def test_a_fabricated_marker_is_not_vindicated_by_a_different_marker_of_the_same
 
 
 def test_a_fabricated_start_marker_is_not_vindicated_by_a_different_wf_same_theme(tmp_path):
-    # Given a run that really emits a start marker (theme="neon night",
-    # wf=techtest.md) but only ever quotes a start marker for the *same*
+    # Given a run that really emits a start marker (with wf=techtest.md and
+    # theme="neon night") but only ever quotes a start marker for the *same*
     # theme with a *different* wf -- that wf never really happened, it was
     # only shown inside a fence
     fabricated_start = 'BPTRACE start theme="neon night" wf=totally-different-workflow.md'
@@ -1957,7 +1962,7 @@ def test_a_crash_while_building_the_parser_is_exit_2(tmp_path):
     boom = ("import check_transcript as ct, sys\n"
             "ct.build_parser = lambda: (_ for _ in ()).throw(RuntimeError('kaboom'))\n"
             "sys.exit(ct.main(['x.jsonl']))\n")
-    # When the CLI runs
+    # When the command-line tool runs
     r = subprocess.run([sys.executable, "-c", boom], capture_output=True, text=True,
                        cwd=str(SCRIPT.parent))
     # Then it is an internal error (2), not Python's default 1 which means FAIL
@@ -2088,7 +2093,7 @@ def test_an_optional_count_is_declared_optional():
     assert type(None) in typing.get_args(hints["count"])
 
 
-# --- --allow-anomalies through the CLI ----------------------------------------
+# --- --allow-anomalies through the command-line tool --------------------------
 def test_cli_allow_anomalies_turns_a_damaged_run_into_a_pass(tmp_path):
     # Given a run that meets its expectations but also emitted a malformed marker
     p = damaged_run(tmp_path)
@@ -2158,8 +2163,9 @@ def test_fixtures_carry_the_outer_fields_a_real_transcript_has(path):
                path.read_text(encoding="utf-8").splitlines() if line.strip()]
     turns = [e for e in entries if e.get("type") in ("user", "assistant")]
     # When its envelope is inspected
-    # Then it is the CC envelope, not a bare {"type", "message"} pair -- the
-    # parser is exercised against the shape it will actually meet
+    # Then it is the CC envelope, not a bare pair of only the "type" and
+    # "message" keys -- the parser is exercised against the shape that it
+    # actually meets
     assert turns
     for entry in turns:
         for key in ("uuid", "parentUuid", "timestamp", "sessionId", "isSidechain",
@@ -2301,7 +2307,7 @@ def test_recorded_fixtures_carry_no_personal_data():
     blob = "\n".join(p.read_text(encoding="utf-8") for p in sorted(TESTDATA.rglob("*"))
                      if p.is_file())
     # When they are scanned
-    # Then no home directory, user name or e-mail address survived the anonymisation
+    # Then no home directory, user name or email address survived the anonymisation
     for leak in ["/home/", "tie303177", "@", "toolu_bdrk"]:
         assert leak not in blob, leak
 
@@ -2327,9 +2333,9 @@ def test_live_project_dir_can_be_scanned_without_crashing():
 # There is no live GHC transcript anywhere to record from -- nobody has run
 # GHC for this project -- so every fixture below is hand-built to the
 # documented schema, one behaviour at a time, exactly like the CC fixtures
-# above. Nothing here is "verified against a real GHC session"; that is a
-# separate, not-yet-taken step, called out explicitly in the coordinator's
-# self-check (checks/task-1.md).
+# earlier in this file. Nothing here is "verified against a real GHC
+# session"; that is a separate, not-yet-taken step, called out explicitly in
+# the coordinator's self-check (checks/task-1.md).
 # =============================================================================
 def ghc_assistant(content, tool_requests=None):
     return {"type": "assistant.message",
@@ -2356,7 +2362,7 @@ def ghc_session_start(session_id):
 
 def ghc_happy_run(tmp_path, name="s.jsonl"):
     """Step 1 done directly, step 2 delegated to techtest-echo inline: the GHC
-    analogue of happy_run() above, same theme/steps/actors."""
+    analogue of happy_run(), with the same theme/steps/actors."""
     return write_jsonl(tmp_path / name, [
         ghc_session_start("ghc-sess-1"),
         ghc_assistant(START),
@@ -2444,7 +2450,7 @@ def test_ghc_toolRequests_string_encoded_arguments_dedup_against_the_dict_form(t
     # When parsed
     run = ct.parse_ghc_run(p)
     # Then the string-encoded announcement and the dict-encoded
-    # tool.execution_start are recognised as the exact same call: one event,
+    # tool.execution_start are recognized as the exact same call: one event,
     # not two, and no spurious "collides with a still-open call" / "reused"
     # warning (which is what happened before the string was parsed: it
     # silently became `{}`, which no longer equalled the real dict)
@@ -2478,7 +2484,7 @@ def test_ghc_a_tool_request_repeated_in_toolRequests_is_deduped_too(tmp_path):
     ])
     # When parsed
     run = ct.parse_ghc_run(p)
-    # Then the repeat is still recognised by toolCallId
+    # Then the repeat is still recognized by toolCallId
     assert len(run.tool_uses) == 1
 
 
@@ -2593,7 +2599,7 @@ def test_ghc_runSubagent_target_read_from_agentName_key_not_name(tmp_path):
     # of `agentName` here always produced `to == ""` and
     # origin == subagent:<unknown> on real data, since real GHC transcripts
     # never carry a `name` key inside runSubagent's arguments at all --
-    # regardless of the arguments-string fix covered above
+    # regardless of the arguments-string fix that the preceding tests cover
     assert len(run.delegations) == 1
     assert run.delegations[0].detail["to"] == "techtest-echo"
     assert run.bash_calls[0].origin == "subagent:techtest-echo"
@@ -2759,7 +2765,7 @@ def test_ghc_out_of_order_completion_closes_the_matched_frame_and_everything_abo
 
 # --- GHC: toolCallId reuse across two unrelated calls (review finding #2) ---
 def test_ghc_a_reused_toolCallId_across_two_unrelated_calls_does_not_erase_the_second(tmp_path):
-    # Given a runInTerminal call that completes normally under id "reused-id",
+    # Given a runInTerminal call under id "reused-id" that completes normally,
     # and later, an unrelated runSubagent delegation to a different agent that
     # happens to reuse that same, already-closed id
     p = write_jsonl(tmp_path / "s.jsonl", [
@@ -2786,7 +2792,7 @@ def test_ghc_a_reused_toolCallId_across_two_unrelated_calls_does_not_erase_the_s
 
 
 def test_ghc_a_reused_toolCallId_is_recognised_even_via_execution_start_alone(tmp_path):
-    # Given a runInTerminal call that completes normally under id "reused-id",
+    # Given a runInTerminal call under id "reused-id" that completes normally,
     # and later a runSubagent tool.execution_start reuses that same id directly
     # -- with no toolRequests[] announcement in between -- exercising the reuse
     # check inside the tool.execution_start branch itself, not just the one in
@@ -2802,7 +2808,7 @@ def test_ghc_a_reused_toolCallId_is_recognised_even_via_execution_start_alone(tm
     ])
     # When parsed
     run = ct.parse_ghc_run(p)
-    # Then the delegation is recognised as its own distinct event, not silently
+    # Then the delegation is recognized as its own distinct event, not silently
     # merged into the earlier, already-closed runInTerminal call
     assert len(run.delegations) == 1
     assert run.delegations[0].detail["to"] == "second-agent"
@@ -2811,7 +2817,7 @@ def test_ghc_a_reused_toolCallId_is_recognised_even_via_execution_start_alone(tm
 
 
 # --- GHC: toolCallId reused WHILE still open, not after close (fix round 2) --
-# The first fix round only recognised reuse once a `tool.execution_complete`
+# The first fix round only recognized reuse once a `tool.execution_complete`
 # had been seen for the id. These reproduce the gap all three reviewers found
 # independently: a genuinely different call reusing an id that some earlier
 # call still legitimately holds open.
@@ -2859,7 +2865,7 @@ def test_ghc_reused_toolCallId_while_still_open_is_recognised_even_via_execution
     ])
     # When parsed
     run = ct.parse_ghc_run(p)
-    # Then the colliding call is recognised as its own distinct event, not
+    # Then the colliding call is recognized as its own distinct event, not
     # silently merged into the still-open runSubagent call
     assert len(run.bash_calls) == 1
     assert run.bash_calls[0].detail["command"] == "collide"
@@ -2950,8 +2956,8 @@ def test_ghc_reused_toolCallId_while_still_open_at_a_non_outermost_nesting_level
 # --- GHC: same-call comparison must use real arguments, not just `detail`,   -
 # --- for the generic TOOL kind too (fix round 3) ----------------------------
 # `_ghc_tool_event` only ever fills in a meaningful `detail` for the two
-# special-cased tool names (`runSubagent` -> {"to": ...}, `runInTerminal` ->
-# {"command": ...}); every other GHC tool name -- `readFile`, `writeFile`,
+# special-cased tool names (a "to" key for `runSubagent`, a "command" key for
+# `runInTerminal`); every other GHC tool name -- `readFile`, `writeFile`,
 # `semanticSearch`, and so on -- falls through to the generic TOOL kind with
 # `detail = {}` unconditionally. `_ghc_same_call` used to compare `detail`,
 # so for the generic TOOL kind it was always comparing {} == {}: a genuinely
@@ -3002,7 +3008,7 @@ def test_ghc_reused_toolCallId_while_still_open_with_identical_arguments_to_a_ge
     ])
     # When parsed
     run = ct.parse_ghc_run(p)
-    # Then it is still recognised as one event, not two, and no collision
+    # Then it is still recognized as one event, not two, and no collision
     # warning is raised for it
     assert len(run.tool_uses) == 1
     assert run.tool_uses[0].name == "readFile"
@@ -3012,8 +3018,8 @@ def test_ghc_reused_toolCallId_while_still_open_with_identical_arguments_to_a_ge
 # --- GHC: stray/duplicate tool.execution_complete (fix round 2, Verification) -
 def test_ghc_a_stray_duplicate_completion_after_a_legitimate_reuse_is_reported_not_silently_accepted(
         tmp_path):
-    # Given a runSubagent delegation to agent-a that opens and closes normally
-    # under id "reused-id", then a second, legitimate reuse of that same id
+    # Given a runSubagent delegation to agent-a under id "reused-id" that opens
+    # and closes normally, then a second, legitimate reuse of that same id
     # by agent-b that ALSO opens and closes normally -- followed by a THIRD,
     # stray/duplicate tool.execution_complete for the same id that does not
     # correspond to anything currently open (agent-b's own completion already
@@ -3210,7 +3216,8 @@ def test_platforms_registry_holds_exactly_cc_and_ghc():
 def test_cli_rejects_an_unknown_platform_value(tmp_path):
     # Given a transcript that would otherwise parse fine
     p = happy_run(tmp_path)
-    # When the CLI is invoked with a --platform value that is not registered
+    # When the command-line tool is invoked with a --platform value that is not
+    # registered
     r = run_cli(str(p), "--platform", "not-a-real-platform")
     # Then argparse rejects it before any parsing is attempted
     assert r.returncode == 2
@@ -3219,7 +3226,7 @@ def test_cli_rejects_an_unknown_platform_value(tmp_path):
 
 # --- GHC: project-dir discovery (path-matching logic only; see note below) --
 # There is no live VS Code install anywhere this suite runs, so none of this
-# is "verified against a real workspaceStorage". What is tested is the
+# is "verified against a real workspaceStorage." What is tested is the
 # matching logic itself, against directories built by hand with tmp_path:
 # given a `workspace.json`, does the right wsHash come back.
 def write_workspace_json(storage_dir, ws_hash, folder):
@@ -3377,7 +3384,7 @@ def test_listdir_safe_returns_empty_for_a_missing_directory(tmp_path):
     # Given a path that does not exist
     # When it is listed
     # Then it is simply empty, not an error -- one unusable candidate location
-    # must not abort the search for the others
+    # must not stop the search for the others
     assert ct._listdir_safe(tmp_path / "nope") == []
 
 
@@ -3406,11 +3413,12 @@ def test_ghc_transcripts_lists_jsonl_files_only(tmp_path):
     assert found == ["s1.jsonl"]
 
 
-# --- GHC: CLI end to end -------------------------------------------------------
+# --- GHC: command-line tool end to end ----------------------------------------
 def test_cli_platform_ghc_end_to_end(tmp_path):
     # Given a GHC-shaped happy-path transcript, named explicitly
     p = ghc_happy_run(tmp_path)
-    # When the CLI is invoked with --platform ghc and the techtest expectations
+    # When the command-line tool is invoked with --platform ghc and the techtest
+    # expectations
     r = run_cli(str(p), "--platform", "ghc",
                 "--expect", "start:wf=techtest.md",
                 "--expect", "step=1:actor=main",
