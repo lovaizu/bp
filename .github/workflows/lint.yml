@@ -1,0 +1,19 @@
+# setup.sh of lovaizu/repofiles puts this file. To change it, run that
+# setup.sh again, as the README of lovaizu/repofiles says.
+name: Lint
+
+on: push
+
+# The checks only read the repository, so the token can change nothing.
+permissions:
+  contents: read
+
+jobs:
+  # The checks of lefthook.yml on every file, as they run before each
+  # commit. They catch a change from a clone without the hooks, or from
+  # GitHub itself.
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: lovaizu/repofiles@7f6f94bfc25a5d428b9849f79493849548175257 # v0.2.0

@@ -1,0 +1,14 @@
+# setup.sh of lovaizu/repofiles puts this file. To change it, run that
+# setup.sh again, as the README of lovaizu/repofiles says.
+# lefthook-repo.yml holds the settings of this repository, and setup.sh
+# doesn't change it: the files of each job, by glob and exclude, and
+# skip: true on the job of a language that this repository doesn't hold.
+extends:
+  - lefthook-repo.yml
+remotes:
+  - git_url: https://github.com/lovaizu/repofiles
+    ref: v0.2.0
+    configs:
+      - english.yml
+      - japanese.yml
+      - claude-code.yml

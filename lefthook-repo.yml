@@ -1,0 +1,6 @@
+# The lefthook settings of this repository, which lefthook.yml extends.
+pre-commit:
+  jobs:
+    # main holds no Japanese text.
+    - name: japanese
+      skip: true
