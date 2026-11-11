@@ -2,10 +2,12 @@
 pre-commit:
   jobs:
     # The design doc holds Japanese, so the Japanese check reads it, and
-    # the English check leaves it out.
+    # the English check leaves it out. .rn/ holds the notes that rn of
+    # lovaizu/ccpm keeps on the work, which the checks leave out.
     - name: english
       exclude:
         - "docs/cross-platform-agent-design.md"
+        - ".rn/**"
     - name: japanese
       glob:
         - "docs/cross-platform-agent-design.md"
