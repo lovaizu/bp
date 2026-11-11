@@ -7,7 +7,7 @@ extends:
   - lefthook-repo.yml
 remotes:
   - git_url: https://github.com/lovaizu/repofiles
-    ref: v0.1.1
+    ref: v0.2.0
     configs:
       - english.yml
       - japanese.yml

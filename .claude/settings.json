@@ -7,13 +7,13 @@
           {
             "type": "command",
             "if": "Bash(gh issue *)",
-            "command": "out=\"$(LEFTHOOK_OUTPUT=execution_out lefthook run claude-code --no-tty --colors off 2>/dev/null)\" || { echo \"The text of this command wasn't checked, as lefthook couldn't run the checks. Fix: install lefthook, and run lefthook install in this repository.\" >&2; exit 2; }; printf '%s\\n' \"$out\" | sed -n '/^{/,$p'",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-texts.sh\"",
             "timeout": 300
           },
           {
             "type": "command",
             "if": "Bash(gh pr *)",
-            "command": "out=\"$(LEFTHOOK_OUTPUT=execution_out lefthook run claude-code --no-tty --colors off 2>/dev/null)\" || { echo \"The text of this command wasn't checked, as lefthook couldn't run the checks. Fix: install lefthook, and run lefthook install in this repository.\" >&2; exit 2; }; printf '%s\\n' \"$out\" | sed -n '/^{/,$p'",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-texts.sh\"",
             "timeout": 300
           }
         ]
