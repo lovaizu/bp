@@ -1,0 +1,19 @@
+# setup.sh of lovaizu/repofiles puts this file. To change it, run that
+# setup.sh again, as the README of lovaizu/repofiles says.
+name: Checks
+
+on: push
+
+# The checks only read the repository, so the token can change nothing.
+permissions:
+  contents: read
+
+jobs:
+  # The checks of lefthook.yml on every file, as they run before each
+  # commit. They catch a change from a clone without the hooks, or from
+  # GitHub itself.
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: lovaizu/repofiles@14b756375f7e32f3a88285432ee6ca037dcab3d0 # v0.1.0

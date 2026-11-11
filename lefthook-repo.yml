@@ -1,0 +1,11 @@
+# The lefthook settings of this repository, which lefthook.yml extends.
+pre-commit:
+  jobs:
+    - name: english
+      # LICENSE is the text of the MIT License, which this repository
+      # copies as is and doesn't write for its readers.
+      exclude:
+        - LICENSE
+    # main holds no Japanese text.
+    - name: japanese
+      skip: true
