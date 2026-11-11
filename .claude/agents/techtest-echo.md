@@ -1,28 +1,28 @@
 ---
 name: techtest-echo
-description: Echoes the given input via a shell command. Technical validation only (not part of BLACKPINK) — used to confirm delegation reliability.
+description: Echoes the given input with a shell command, to confirm that delegation works. It's for technical validation only, and isn't part of BLACKPINK.
 tools: Bash
 ---
 
-## IN
+## Input
 
-- `input` — text to echo (string)
+- `input`: the text to echo, a string.
 
 ## Procedure
 
-1. Run: `echo "step2: <input>"` (fill in the actual input)
-2. Return the result as JSON (see OUT spec below). Do not add commentary, prose, or markdown around the JSON object.
+1. Run `echo "step2: <input>"`, with the actual input in place of `<input>`.
+2. Return the result as JSON, as the output section says. Add no commentary, prose, or Markdown around the JSON object.
 
-## OUT
+## Output
 
-On success, output exactly this JSON object (no surrounding text), then the BPTRACE line:
+On success, output exactly this JSON object, with no text around it, and then the BPTRACE line:
 
 ```json
 {"status": "ok", "echoed": "<the command's stdout>"}
 ```
 BPTRACE step=2 out actor=techtest-echo
 
-On error (e.g. command failed), output exactly:
+On an error, for example when the command fails, output exactly:
 
 ```json
 {"status": "error", "agent": "techtest-echo", "message": "<description>"}
