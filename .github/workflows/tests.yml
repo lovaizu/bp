@@ -1,0 +1,17 @@
+name: Tests
+
+on: push
+
+# The check only reads the repository, so its token can change nothing.
+permissions:
+  contents: read
+
+jobs:
+  # The checks of lefthook.yml on every file, as they run before each
+  # commit. They catch a change from a clone without the hooks, or from
+  # GitHub itself.
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: lovaizu/checks@504575be65dfe91bdc1c3fac709e9fa11f4686b9 # v0.2.0
