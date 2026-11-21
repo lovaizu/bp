@@ -6,13 +6,6 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(gh issue *)",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-texts.sh\"",
-            "timeout": 300
-          },
-          {
-            "type": "command",
-            "if": "Bash(gh pr *)",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-texts.sh\"",
             "timeout": 300
           }

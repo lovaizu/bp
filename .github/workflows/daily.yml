@@ -1,0 +1,28 @@
+# setup.sh of lovaizu/repofiles puts this file. To change it, run that
+# setup.sh again, as the README of lovaizu/repofiles says.
+# The checks that run each day, apart from lint.yml: GitHub turns off a
+# scheduled workflow of a public repository after 60 days with no activity,
+# and a push doesn't turn it back on, so a schedule in lint.yml would turn
+# off the checks of each push with it.
+name: Daily
+
+on:
+  # GitHub delays many runs at the start of an hour.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# The checks only read the repository, so the token can change nothing.
+permissions:
+  contents: read
+
+jobs:
+  # All the links of the files of the links check of lefthook.yml, as a
+  # site outside the repository can stop answering on any day.
+  links:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: lovaizu/repofiles@2c9f3c90ef51ec380c03c992115ec593617c8d79 # v0.6.1
+        with:
+          daily: links
