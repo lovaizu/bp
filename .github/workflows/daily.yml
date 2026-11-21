@@ -23,6 +23,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: lovaizu/repofiles@52343270e50330933c810081c853b4230ae15490 # v0.6.0
+      - uses: lovaizu/repofiles@2c9f3c90ef51ec380c03c992115ec593617c8d79 # v0.6.1
         with:
           daily: links
